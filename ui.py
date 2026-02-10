@@ -5,9 +5,7 @@ combined volume meter + silence threshold, and status bar.
 
 from __future__ import annotations
 
-import json
-import os
-from pathlib import Path
+import keyring
 
 from PyQt6.QtCore import Qt, QSize, QRect, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QColor, QFont, QPainter, QPen
@@ -30,19 +28,9 @@ from PyQt6.QtWidgets import (
 
 from hotkey import HotkeyCombo, HotkeyListener, key_to_str, _MODIFIER_MAP
 
-# Persistent config file path (next to the script)
-_CONFIG_PATH = Path(__file__).resolve().parent / ".voice_input_config.json"
-
-
-def _load_config() -> dict:
-    try:
-        return json.loads(_CONFIG_PATH.read_text())
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
-
-
-def _save_config(data: dict):
-    _CONFIG_PATH.write_text(json.dumps(data, indent=2))
+# Keyring service name for this application
+_KEYRING_SERVICE = "voice_input"
+_KEYRING_API_KEY = "gcp_api_key"
 
 
 # Common language codes for the dropdown: (display_name, description, code)
@@ -405,16 +393,25 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot()
     def _save_api_key(self):
-        """Persist the current API key to the config file."""
-        cfg = _load_config()
-        cfg["api_key"] = self.api_key_input.text().strip()
-        _save_config(cfg)
-        self._set_status("API key saved")
+        """Persist the current API key to the OS keychain."""
+        key = self.api_key_input.text().strip()
+        if key:
+            keyring.set_password(_KEYRING_SERVICE, _KEYRING_API_KEY, key)
+            self._set_status("API key saved to keychain")
+        else:
+            # Delete from keychain if the field is empty
+            try:
+                keyring.delete_password(_KEYRING_SERVICE, _KEYRING_API_KEY)
+            except keyring.errors.PasswordDeleteError:
+                pass
+            self._set_status("API key cleared from keychain")
 
     def _load_saved_config(self):
-        """Restore API key from the config file (if present)."""
-        cfg = _load_config()
-        key = cfg.get("api_key", "")
+        """Restore API key from the OS keychain (if present)."""
+        try:
+            key = keyring.get_password(_KEYRING_SERVICE, _KEYRING_API_KEY)
+        except Exception:
+            key = None
         if key:
             self.api_key_input.setText(key)
 

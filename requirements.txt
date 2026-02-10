@@ -3,4 +3,5 @@ sounddevice>=0.4
 numpy>=1.24
 pynput>=1.7
 requests>=2.31
+keyring>=25.0
 
