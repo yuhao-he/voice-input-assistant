@@ -10,10 +10,36 @@ Both follow the mouse cursor while visible.
 from __future__ import annotations
 
 import math
+import platform
 
 from PyQt6.QtCore import Qt, QTimer, QPoint
 from PyQt6.QtGui import QColor, QPainter, QPen, QCursor, QBrush, QConicalGradient
 from PyQt6.QtWidgets import QWidget
+
+_IS_MACOS = platform.system() == "Darwin"
+
+# On macOS, use Cocoa to snapshot and re-activate the previously focused
+# app after showing an overlay, so our main window never steals focus.
+_ns_workspace = None
+if _IS_MACOS:
+    try:
+        from AppKit import NSWorkspace as _NSWorkspace
+        _ns_workspace = _NSWorkspace.sharedWorkspace
+    except ImportError:
+        pass
+
+
+def _get_frontmost_app():
+    """Return the currently frontmost application (macOS only, else None)."""
+    if _ns_workspace is not None:
+        return _ns_workspace().frontmostApplication()
+    return None
+
+
+def _reactivate_app(app):
+    """Re-activate *app* so our Qt app doesn't stay frontmost (macOS)."""
+    if app is not None:
+        app.activateWithOptions_(0)
 
 
 # Shared constants
@@ -25,6 +51,11 @@ class _BaseBubble(QWidget):
     """
     Base class: frameless, always-on-top, translucent dark bubble
     that follows the mouse cursor.
+
+    Must float above ALL apps without stealing focus or bringing
+    the main window forward.  On macOS the Tool window type causes
+    application activation on show(); we counter that by immediately
+    re-focusing the previously active app via Cocoa.
     """
 
     def __init__(self):
@@ -33,10 +64,15 @@ class _BaseBubble(QWidget):
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.Tool            # keeps it out of the taskbar
-            | Qt.WindowType.WindowTransparentForInput  # clicks pass through
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)  # clicks pass through
+
+        # Keep Tool windows visible even when our app is not frontmost.
+        if _IS_MACOS:
+            self.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow)
+
         self.setFixedSize(_SIZE, _SIZE)
 
         # Timer to follow the cursor
@@ -47,7 +83,13 @@ class _BaseBubble(QWidget):
     def show_at_cursor(self):
         """Show the bubble and start following the cursor."""
         self._follow_cursor()
+
+        # Snapshot whichever app currently owns focus (e.g. Chrome)
+        prev = _get_frontmost_app()
         self.show()
+        # Give focus right back so our main window never comes forward
+        _reactivate_app(prev)
+
         self._follow_timer.start()
 
     def dismiss(self):
