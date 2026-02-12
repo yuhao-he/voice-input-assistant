@@ -113,8 +113,8 @@ class _TwoLineDelegate(QStyledItemDelegate):
         total = title_h + self._LINE_SPACING + desc_h + self._PADDING * 2
         return QSize(option.rect.width(), total)
 
-# Default hotkey: Ctrl + '
-DEFAULT_HOTKEY = HotkeyCombo(modifiers={"ctrl"}, main_key="'")
+# Default hotkey: F3
+DEFAULT_HOTKEY = HotkeyCombo(modifiers=set(), main_key="f3")
 
 # Number of capsules in the level meter
 NUM_CAPSULES = 20
