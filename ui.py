@@ -51,13 +51,33 @@ class _TwoLineDelegate(QStyledItemDelegate):
 
     _PADDING = 6
     _LINE_SPACING = 2
+    _DESC_SCALE = 0.85
+
+    @staticmethod
+    def _make_smaller_font(base: QFont, scale: float) -> QFont:
+        """Return a copy of *base* scaled down, handling both point and pixel sizes."""
+        font = QFont(base)
+        pt = base.pointSizeF()
+        if pt > 0:
+            font.setPointSizeF(pt * scale)
+        else:
+            px = base.pixelSize()
+            font.setPixelSize(max(1, int(px * scale)))
+        return font
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index):
         self.initStyleOption(option, index)
 
-        # Draw selection / hover background
-        style = option.widget.style() if option.widget else QApplication.style()
-        style.drawPrimitive(style.PrimitiveElement.PE_PanelItemViewItem, option, painter, option.widget)
+        # Draw hover / selection background as light grey instead of system blue
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        from PyQt6.QtWidgets import QStyle
+        if option.state & QStyle.StateFlag.State_Selected or option.state & QStyle.StateFlag.State_MouseOver:
+            painter.setBrush(QColor("#444444"))
+            painter.setPen(QPen(Qt.PenStyle.NoPen))
+            bg_rect = option.rect.adjusted(2, 1, -2, -1)
+            painter.drawRoundedRect(bg_rect, 4, 4)
+        painter.restore()
 
         rect: QRect = option.rect.adjusted(self._PADDING, self._PADDING,
                                             -self._PADDING, -self._PADDING)
@@ -74,8 +94,7 @@ class _TwoLineDelegate(QStyledItemDelegate):
         painter.drawText(title_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, title)
 
         # Description (smaller, grey)
-        desc_font = QFont(option.font)
-        desc_font.setPointSizeF(option.font.pointSizeF() * 0.85)
+        desc_font = self._make_smaller_font(option.font, self._DESC_SCALE)
         painter.setFont(desc_font)
         painter.setPen(QColor("#999999"))
         desc_y = title_rect.bottom() + self._LINE_SPACING
@@ -86,8 +105,7 @@ class _TwoLineDelegate(QStyledItemDelegate):
         self.initStyleOption(option, index)
         title_font = QFont(option.font)
         title_font.setBold(True)
-        desc_font = QFont(option.font)
-        desc_font.setPointSizeF(option.font.pointSizeF() * 0.85)
+        desc_font = self._make_smaller_font(option.font, self._DESC_SCALE)
 
         from PyQt6.QtGui import QFontMetrics
         title_h = QFontMetrics(title_font).height()
@@ -202,6 +220,43 @@ class MainWindow(QMainWindow):
         lang_row.addWidget(QLabel("Language:"))
         self.language_combo = QComboBox()
         self.language_combo.setItemDelegate(_TwoLineDelegate(self.language_combo))
+        self.language_combo.setStyleSheet("""
+            QComboBox {
+                border: 1px solid #555;
+                border-radius: 10px;
+                padding: 4px 14px;
+                background: transparent;
+                color: #ccc;
+                font-size: 13px;
+            }
+            QComboBox:hover {
+                border-color: #888;
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 0px;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                width: 0px;
+                height: 0px;
+            }
+            QComboBox QAbstractItemView {
+                background: #2a2a2a;
+                border: 1px solid #555;
+                border-radius: 6px;
+                padding: 4px;
+                selection-background-color: #444;
+                outline: none;
+            }
+            QComboBox QAbstractItemView::item {
+                border-radius: 4px;
+                padding: 2px;
+            }
+            QComboBox QAbstractItemView::item:hover {
+                background: #444;
+            }
+        """)
         for display, description, code in LANGUAGES:
             self.language_combo.addItem(display, code)
             idx = self.language_combo.count() - 1
