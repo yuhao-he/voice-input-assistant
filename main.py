@@ -6,7 +6,6 @@ Wires together:
   hotkey release → sound chirp + spinner bubble + stop recording
                  → trim silence → transcribe → auto-paste → dismiss bubble
 
-An always-on VolumeMonitor drives the live input level meter.
 On transcription, the text is pasted into the currently focused input
 via a clipboard-swap technique (save → set → paste keystroke → restore).
 """
@@ -25,7 +24,7 @@ from pynput.keyboard import Controller as KbController, Key
 # Determine the correct modifier for paste (Cmd on macOS, Ctrl elsewhere)
 _PASTE_MODIFIER = Key.cmd if platform.system() == "Darwin" else Key.ctrl
 
-from recorder import AudioRecorder, VolumeMonitor, trim_silence
+from recorder import AudioRecorder, trim_silence
 from transcriber import transcribe
 from postprocess import postprocess
 from sounds import play_start, play_stop
@@ -42,22 +41,18 @@ class AppController(QObject):
 
     transcription_done = pyqtSignal(str)   # emitted when result is ready
     transcription_failed = pyqtSignal(str)  # emitted on error or silence
-    volume_update = pyqtSignal(float)       # live volume dB from audio thread
+    volume_update = pyqtSignal(float)       # live volume dB from recording
 
     def __init__(self, window: MainWindow):
         super().__init__()
         self.window = window
-        self.recorder = AudioRecorder()
+        self.recorder = AudioRecorder(on_volume=self._on_volume_callback)
 
         self.__kb = None  # created lazily to avoid Quartz/Qt startup race
 
         # Overlay bubbles
         self._recording_bubble = RecordingBubble()
         self._spinner_bubble = SpinnerBubble()
-
-        # Always-on volume monitor (like an OS input level meter)
-        self.volume_monitor = VolumeMonitor(on_volume=self._on_volume_callback)
-        self.volume_monitor.start()
 
         # Connect window signals
         self.window.recording_requested.connect(self.on_start_recording)
@@ -67,8 +62,8 @@ class AppController(QObject):
         self.transcription_done.connect(self._on_transcription_done)
         self.transcription_failed.connect(self._on_transcription_failed)
 
-        # Connect volume signal to UI meter
-        self.volume_update.connect(self.window.update_volume)
+        # Feed live recording volume to the bubble
+        self.volume_update.connect(self._recording_bubble.set_volume)
 
     @property
     def _kb(self):
@@ -103,21 +98,22 @@ class AppController(QObject):
         self._spinner_bubble.show_at_cursor()
 
         # Run trim + transcription in a background thread
-        threshold_db = self.window.get_threshold_db()
         language = self.window.get_language_code()
         prompt = self.window.get_postproc_prompt()
 
         thread = threading.Thread(
             target=self._transcribe_worker,
-            args=(audio, threshold_db, language, prompt),
+            args=(audio, language, prompt),
             daemon=True,
         )
         thread.start()
 
-    def _transcribe_worker(self, audio, threshold_db, language, prompt):
+    _SILENCE_THRESHOLD_DB = -55.0
+
+    def _transcribe_worker(self, audio, language, prompt):
         """Runs in a background thread."""
         # Trim silence
-        trimmed = trim_silence(audio, threshold_db=threshold_db)
+        trimmed = trim_silence(audio, threshold_db=self._SILENCE_THRESHOLD_DB)
         if trimmed is None:
             self.transcription_failed.emit("Audio was entirely silence — skipped API call.")
             return

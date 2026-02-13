@@ -26,18 +26,19 @@ class AudioRecorder:
     Records audio from the default input device.
 
     Usage:
-        recorder = AudioRecorder()
+        recorder = AudioRecorder(on_volume=my_callback)
         recorder.start()
         ...
         audio_data = recorder.stop()   # returns numpy int16 array
         trimmed = trim_silence(audio_data)
     """
 
-    def __init__(self):
+    def __init__(self, on_volume=None):
         self._stream: Optional[sd.InputStream] = None
         self._frames: list[np.ndarray] = []
         self._lock = threading.Lock()
         self._recording = False
+        self._on_volume = on_volume
 
     def start(self):
         """Start recording audio."""
@@ -85,6 +86,16 @@ class AudioRecorder:
         with self._lock:
             if self._recording:
                 self._frames.append(indata.copy())
+
+        # Report live volume to the callback (if set)
+        if self._on_volume is not None:
+            samples = indata.flatten().astype(np.float64)
+            rms = np.sqrt(np.mean(samples ** 2))
+            rms_db = 20.0 * np.log10(rms / 32768.0) if rms > 0 else -120.0
+            try:
+                self._on_volume(rms_db)
+            except Exception:
+                pass
 
 
 class VolumeMonitor:

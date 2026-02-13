@@ -1,6 +1,6 @@
 """
-PyQt6 main window: credential inputs, hotkey configuration,
-combined volume meter + silence threshold, and status bar.
+PyQt6 main window: language selection, hotkey configuration,
+post-transcription editing, and status bar.
 """
 
 from __future__ import annotations
@@ -17,7 +17,6 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QPlainTextEdit,
     QPushButton,
-    QSlider,
     QStatusBar,
     QStyledItemDelegate,
     QStyleOptionViewItem,
@@ -117,76 +116,6 @@ class _TwoLineDelegate(QStyledItemDelegate):
 # Default hotkey: F3
 DEFAULT_HOTKEY = HotkeyCombo(modifiers=set(), main_key="f3")
 
-# Number of capsules in the level meter
-NUM_CAPSULES = 20
-
-
-class CapsuleMeter(QWidget):
-    """
-    A discrete-capsule volume level meter, modelled after an OS
-    "Input level" indicator.
-
-    Draws NUM_CAPSULES thin rounded rectangles side by side.
-    - Capsules at or above the threshold and below the current level
-      are lit green.
-    - Capsules below the threshold are always grey (even if the level
-      reaches them).
-    - Unlit capsules are dark grey.
-    """
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._level = 0              # 0..NUM_CAPSULES  (current volume)
-        self._threshold_idx = 0      # 0..NUM_CAPSULES  (silence threshold)
-        self._lit_color = QColor("#7a9a7c")    # muted grey-green
-        self._below_color = QColor("#6e6e6e")  # grey for below-threshold lit capsules
-        self._dim_color = QColor("#3a3a3a")    # dark grey unlit
-        self.setMinimumHeight(20)
-        self.setMaximumHeight(20)
-
-    def set_level(self, count: int):
-        """Set how many capsules should be lit (0..NUM_CAPSULES)."""
-        count = max(0, min(NUM_CAPSULES, count))
-        if count != self._level:
-            self._level = count
-            self.update()
-
-    def set_threshold(self, idx: int):
-        """Set the threshold capsule index (0..NUM_CAPSULES)."""
-        idx = max(0, min(NUM_CAPSULES, idx))
-        if idx != self._threshold_idx:
-            self._threshold_idx = idx
-            self.update()
-
-    def sizeHint(self) -> QSize:
-        return QSize(300, 20)
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QPen(Qt.PenStyle.NoPen))
-
-        w = self.width()
-        h = self.height()
-        gap = 4
-        total_gaps = gap * (NUM_CAPSULES - 1)
-        capsule_w = max(1, (w - total_gaps) / NUM_CAPSULES)
-        radius = min(capsule_w / 2, h / 2, 3)
-
-        for i in range(NUM_CAPSULES):
-            x = i * (capsule_w + gap)
-            if i < self._level:
-                # Lit — green if at/above threshold, grey if below
-                if i >= self._threshold_idx:
-                    painter.setBrush(self._lit_color)
-                else:
-                    painter.setBrush(self._below_color)
-            else:
-                painter.setBrush(self._dim_color)
-            painter.drawRoundedRect(int(x), 0, int(capsule_w), h, radius, radius)
-
-        painter.end()
-
 
 class MainWindow(QMainWindow):
     """Application main window."""
@@ -281,45 +210,6 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(hotkey_group)
 
-        # --- Volume group (capsule meter + silence threshold) ---
-        volume_group = QGroupBox("Volume")
-        volume_layout = QVBoxLayout(volume_group)
-
-        # Shared label width so the meter and slider left-align
-        _label_w = 115
-
-        # Capsule input-level meter
-        meter_row = QHBoxLayout()
-        meter_label = QLabel("Input Level")
-        meter_label.setFixedWidth(_label_w)
-        meter_row.addWidget(meter_label)
-        self.capsule_meter = CapsuleMeter()
-        meter_row.addWidget(self.capsule_meter)
-        volume_layout.addLayout(meter_row)
-
-        # Silence threshold slider
-        threshold_row = QHBoxLayout()
-        threshold_label = QLabel("Silence Threshold")
-        threshold_label.setFixedWidth(_label_w)
-        threshold_row.addWidget(threshold_label)
-        self.threshold_slider = QSlider(Qt.Orientation.Horizontal)
-        self.threshold_slider.setMinimum(-60)
-        self.threshold_slider.setMaximum(-10)
-        self.threshold_slider.setValue(-55)
-        self.threshold_slider.setTickInterval(5)
-        self.threshold_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
-        self.threshold_slider.valueChanged.connect(self._update_threshold_label)
-        threshold_row.addWidget(self.threshold_slider)
-        self.threshold_value_label = QLabel("-55 dB")
-        self.threshold_value_label.setFixedWidth(70)
-        self.threshold_value_label.setAlignment(
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-        )
-        threshold_row.addWidget(self.threshold_value_label)
-        volume_layout.addLayout(threshold_row)
-
-        layout.addWidget(volume_group)
-
         # --- Post transcription editing group ---
         postproc_group = QGroupBox("Post Transcription Editing")
         postproc_layout = QVBoxLayout(postproc_group)
@@ -354,7 +244,6 @@ class MainWindow(QMainWindow):
 
         # --- Auto-save on change ---
         self.language_combo.currentIndexChanged.connect(self._save_settings)
-        self.threshold_slider.valueChanged.connect(self._save_settings)
         self.postproc_prompt.textChanged.connect(self._save_settings)
 
     # ------------------------------------------------------------------
@@ -375,41 +264,9 @@ class MainWindow(QMainWindow):
     def get_language_code(self) -> str:
         return self.language_combo.currentData()
 
-    def get_threshold_db(self) -> float:
-        return float(self.threshold_slider.value())
-
     def get_postproc_prompt(self) -> str:
         """Return the post-processing prompt (empty string means disabled)."""
         return self.postproc_prompt.toPlainText().strip()
-
-    # ------------------------------------------------------------------
-    # Live volume meter
-    # ------------------------------------------------------------------
-
-    _SMOOTHING_RISE = 0.35   # EMA factor when level is rising (fast attack)
-    _SMOOTHING_FALL = 0.08   # EMA factor when level is falling (slow decay)
-
-    @pyqtSlot(float)
-    def update_volume(self, rms_db: float):
-        """Update the capsule meter with the current dB level (smoothed)."""
-        # Map dB range [-80, 0] → capsule count [0, NUM_CAPSULES]
-        clamped = max(-80.0, min(0.0, rms_db))
-        raw = (clamped + 80.0) / 80.0 * NUM_CAPSULES
-
-        # Exponential moving average: fast attack, slow decay
-        prev = getattr(self, "_smooth_level", 0.0)
-        alpha = self._SMOOTHING_RISE if raw >= prev else self._SMOOTHING_FALL
-        smoothed = prev + alpha * (raw - prev)
-        self._smooth_level = smoothed
-
-        self.capsule_meter.set_level(int(round(smoothed)))
-
-        # Map threshold slider dB → capsule index
-        threshold_db = float(self.threshold_slider.value())
-        t_clamped = max(-80.0, min(0.0, threshold_db))
-        t_idx = int((t_clamped + 80.0) / 80.0 * NUM_CAPSULES)
-        self.capsule_meter.set_threshold(t_idx)
-
 
     # ------------------------------------------------------------------
     # Status helpers
@@ -426,14 +283,6 @@ class MainWindow(QMainWindow):
 
     def set_status_transcribing(self):
         self._set_status("⏳  Transcribing…")
-
-    # ------------------------------------------------------------------
-    # Threshold slider
-    # ------------------------------------------------------------------
-
-    @pyqtSlot(int)
-    def _update_threshold_label(self, value: int):
-        self.threshold_value_label.setText(f"{value} dB")
 
     # ------------------------------------------------------------------
     # Hotkey capture
@@ -503,13 +352,6 @@ class MainWindow(QMainWindow):
                     self.language_combo.setCurrentIndex(i)
                     break
 
-        # Silence threshold
-        saved_threshold = self._settings.value("threshold_db")
-        if saved_threshold is not None:
-            val = int(saved_threshold)
-            self.threshold_slider.setValue(val)
-            self.threshold_value_label.setText(f"{val} dB")
-
         # Post-processing prompt
         saved_prompt = self._settings.value("postproc_prompt", "")
         self.postproc_prompt.setPlainText(saved_prompt or "")
@@ -528,7 +370,6 @@ class MainWindow(QMainWindow):
     def _save_settings(self):
         """Persist current settings."""
         self._settings.setValue("language", self.language_combo.currentData())
-        self._settings.setValue("threshold_db", self.threshold_slider.value())
         self._settings.setValue("postproc_prompt", self.postproc_prompt.toPlainText())
         if self._current_combo is not None:
             self._settings.setValue("hotkey/modifiers", list(self._current_combo.modifiers))

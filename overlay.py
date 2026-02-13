@@ -9,7 +9,6 @@ Both follow the mouse cursor while visible.
 
 from __future__ import annotations
 
-import math
 import platform
 
 from PyQt6.QtCore import Qt, QTimer, QPoint
@@ -104,30 +103,48 @@ class _BaseBubble(QWidget):
 
 class RecordingBubble(_BaseBubble):
     """
-    A small dark bubble with a pulsing red dot — indicates that
-    the microphone is actively recording.
+    A small dark bubble with a volume-reactive red dot — indicates that
+    the microphone is actively recording.  The red circle grows when
+    the user speaks louder and shrinks to a small dot during silence.
     """
+
+    _MIN_RADIUS = 3      # radius when silent
+    _MAX_RADIUS = 13     # radius at full volume
+    _SMOOTHING_RISE = 0.45   # fast attack
+    _SMOOTHING_FALL = 0.12   # slow decay
+    # dB range mapped to [0, 1]
+    _DB_FLOOR = -60.0
+    _DB_CEIL = -10.0
 
     def __init__(self):
         super().__init__()
-        self._pulse_phase = 0.0
+        self._volume_t = 0.0       # smoothed volume 0..1
+        self._raw_t = 0.0          # latest raw volume 0..1
 
-        # Pulse animation timer
-        self._pulse_timer = QTimer(self)
-        self._pulse_timer.setInterval(40)
-        self._pulse_timer.timeout.connect(self._tick_pulse)
+        # Repaint timer (animation frame rate)
+        self._paint_timer = QTimer(self)
+        self._paint_timer.setInterval(30)
+        self._paint_timer.timeout.connect(self._tick)
 
     def show_at_cursor(self):
-        self._pulse_phase = 0.0
-        self._pulse_timer.start()
+        self._volume_t = 0.0
+        self._raw_t = 0.0
+        self._paint_timer.start()
         super().show_at_cursor()
 
     def dismiss(self):
-        self._pulse_timer.stop()
+        self._paint_timer.stop()
         super().dismiss()
 
-    def _tick_pulse(self):
-        self._pulse_phase += 0.15
+    def set_volume(self, rms_db: float):
+        """Set the current volume level (called from Qt main thread)."""
+        clamped = max(self._DB_FLOOR, min(self._DB_CEIL, rms_db))
+        self._raw_t = (clamped - self._DB_FLOOR) / (self._DB_CEIL - self._DB_FLOOR)
+
+    def _tick(self):
+        # Smooth towards the raw value
+        alpha = self._SMOOTHING_RISE if self._raw_t >= self._volume_t else self._SMOOTHING_FALL
+        self._volume_t += alpha * (self._raw_t - self._volume_t)
         self.update()
 
     def paintEvent(self, event):
@@ -139,10 +156,10 @@ class RecordingBubble(_BaseBubble):
         painter.setBrush(QColor(30, 30, 30, 200))
         painter.drawEllipse(0, 0, _SIZE, _SIZE)
 
-        # Pulsing red circle in the centre
-        pulse = 0.5 + 0.5 * math.sin(self._pulse_phase)  # 0..1
-        radius = int(7 + 4 * pulse)
-        alpha = int(180 + 75 * pulse)
+        # Volume-reactive red circle in the centre
+        t = self._volume_t
+        radius = int(self._MIN_RADIUS + (self._MAX_RADIUS - self._MIN_RADIUS) * t)
+        alpha = int(160 + 95 * t)
         cx, cy = _SIZE // 2, _SIZE // 2
         painter.setBrush(QColor(220, 50, 50, alpha))
         painter.drawEllipse(cx - radius, cy - radius, radius * 2, radius * 2)
