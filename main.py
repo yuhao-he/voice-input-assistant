@@ -2,9 +2,11 @@
 Voice Input Application — Entry Point
 
 Wires together:
-  hotkey press  → sound chirp + recording bubble + start recording
-  hotkey release → sound chirp + spinner bubble + stop recording
-                 → trim silence → transcribe → auto-paste → dismiss bubble
+  hotkey press  → sound chirp + transcript overlay + start streaming
+  hotkey release → sound chirp + finish streaming → post-process → auto-paste
+
+While the hotkey is held, audio is streamed to the Speech-to-Text API
+and the live transcript is displayed in a floating overlay near the cursor.
 
 On transcription, the text is pasted into the currently focused input
 via a clipboard-swap technique (save → set → paste keystroke → restore).
@@ -24,11 +26,11 @@ from pynput.keyboard import Controller as KbController, Key
 # Determine the correct modifier for paste (Cmd on macOS, Ctrl elsewhere)
 _PASTE_MODIFIER = Key.cmd if platform.system() == "Darwin" else Key.ctrl
 
-from recorder import AudioRecorder, trim_silence
-from transcriber import transcribe
+from recorder import AudioRecorder
+from transcriber import transcribe_streaming
 from postprocess import postprocess
 from sounds import play_start, play_stop
-from overlay import RecordingBubble, SpinnerBubble
+from overlay import TranscriptOverlay
 from ui import MainWindow
 
 
@@ -41,18 +43,21 @@ class AppController(QObject):
 
     transcription_done = pyqtSignal(str)   # emitted when result is ready
     transcription_failed = pyqtSignal(str)  # emitted on error or silence
-    volume_update = pyqtSignal(float)       # live volume dB from recording
+    interim_transcript = pyqtSignal(str)    # emitted with live transcript text
 
     def __init__(self, window: MainWindow):
         super().__init__()
         self.window = window
-        self.recorder = AudioRecorder(on_volume=self._on_volume_callback)
+        self.recorder = AudioRecorder()
 
         self.__kb = None  # created lazily to avoid Quartz/Qt startup race
 
-        # Overlay bubbles
-        self._recording_bubble = RecordingBubble()
-        self._spinner_bubble = SpinnerBubble()
+        # Transcript overlay (replaces old recording / spinner bubbles)
+        self._transcript_overlay = TranscriptOverlay()
+
+        # Streaming state
+        self._streaming_thread: threading.Thread | None = None
+        self._streaming_result: str | None = None
 
         # Connect window signals
         self.window.recording_requested.connect(self.on_start_recording)
@@ -62,8 +67,8 @@ class AppController(QObject):
         self.transcription_done.connect(self._on_transcription_done)
         self.transcription_failed.connect(self._on_transcription_failed)
 
-        # Feed live recording volume to the bubble
-        self.volume_update.connect(self._recording_bubble.set_volume)
+        # Live transcript updates → overlay
+        self.interim_transcript.connect(self._transcript_overlay.set_text)
 
     @property
     def _kb(self):
@@ -72,60 +77,73 @@ class AppController(QObject):
             self.__kb = KbController()
         return self.__kb
 
-    def _on_volume_callback(self, rms_db: float):
-        """Called from the audio thread — emit a Qt signal to cross threads safely."""
-        self.volume_update.emit(rms_db)
+    def _on_interim_callback(self, text: str):
+        """Called from the streaming thread — emit a Qt signal to cross threads safely."""
+        self.interim_transcript.emit(text)
 
     @pyqtSlot()
     def on_start_recording(self):
         play_start()
-        self._recording_bubble.show_at_cursor()
+        self._transcript_overlay.set_text("")
+        self._transcript_overlay.show_at_cursor()
         self.window.set_status_recording()
         self.recorder.start()
 
+        # Kick off streaming transcription in a background thread.
+        # It reads audio chunks from the recorder's queue in real time.
+        language = self.window.get_language_code()
+        self._streaming_thread = threading.Thread(
+            target=self._streaming_worker,
+            args=(self.recorder.audio_queue, language),
+            daemon=True,
+        )
+        self._streaming_thread.start()
+
     @pyqtSlot()
     def on_stop_recording(self):
-        audio = self.recorder.stop()
-        self._recording_bubble.dismiss()
+        # Stopping the recorder pushes a None sentinel into the audio
+        # queue, which causes the streaming generator to end gracefully.
+        self.recorder.stop()
 
         play_stop()
 
-        if audio is None or len(audio) == 0:
-            self.window.set_status_idle()
-            return
-
+        # The streaming thread is still running (draining final
+        # responses).  Keep the overlay visible while we wait.
         self.window.set_status_transcribing()
-        self._spinner_bubble.show_at_cursor()
 
-        # Run trim + transcription in a background thread
-        language = self.window.get_language_code()
+        # Wait for the streaming thread to finish in a background thread
+        # so we don't block the Qt event loop.
         prompt = self.window.get_postproc_prompt()
-
-        thread = threading.Thread(
-            target=self._transcribe_worker,
-            args=(audio, language, prompt),
+        threading.Thread(
+            target=self._wait_for_streaming,
+            args=(prompt,),
             daemon=True,
-        )
-        thread.start()
+        ).start()
 
-    _SILENCE_THRESHOLD_DB = -55.0
+    def _streaming_worker(self, audio_queue, language):
+        """
+        Runs in a background thread.  Streams audio to the API and
+        collects the final transcript.
+        """
+        self._streaming_result = None
 
-    def _transcribe_worker(self, audio, language, prompt):
-        """Runs in a background thread."""
-        # Trim silence
-        trimmed = trim_silence(audio, threshold_db=self._SILENCE_THRESHOLD_DB)
-        if trimmed is None:
-            self.transcription_failed.emit("Audio was entirely silence — skipped API call.")
-            return
-
-        duration_sec = len(trimmed) / 16000
-        print(f"[Recorder] Trimmed audio: {duration_sec:.1f}s ({len(trimmed)} samples)")
-
-        # Transcribe
-        text = transcribe(
-            audio=trimmed,
+        text = transcribe_streaming(
+            audio_queue=audio_queue,
             language_code=language,
+            on_interim=self._on_interim_callback,
         )
+
+        self._streaming_result = text
+
+    def _wait_for_streaming(self, prompt):
+        """
+        Runs in a background thread.  Waits for the streaming thread
+        to finish, applies post-processing, and emits the result.
+        """
+        if self._streaming_thread is not None:
+            self._streaming_thread.join()
+
+        text = self._streaming_result
 
         if not text:
             self.transcription_failed.emit("No transcription returned.")
@@ -147,8 +165,8 @@ class AppController(QObject):
     def _on_transcription_done(self, text: str):
         print(f"\n>>> {text}\n")
 
-        # Dismiss the spinner bubble
-        self._spinner_bubble.dismiss()
+        # Dismiss the transcript overlay
+        self._transcript_overlay.dismiss()
 
         clipboard = QApplication.clipboard()
 
@@ -185,7 +203,7 @@ class AppController(QObject):
     @pyqtSlot(str)
     def _on_transcription_failed(self, msg: str):
         print(f"[Info] {msg}")
-        self._spinner_bubble.dismiss()
+        self._transcript_overlay.dismiss()
         self.window.set_status_idle()
 
 

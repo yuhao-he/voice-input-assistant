@@ -4,10 +4,14 @@ Audio recorder using sounddevice with silence trimming.
 Records 16-bit PCM mono audio at 16 kHz. After recording stops,
 trims leading and trailing silence based on a configurable RMS
 threshold (in dB).
+
+The recorder also pushes raw audio chunks to a ``queue.Queue`` so
+that a streaming transcription consumer can read them in real time.
 """
 
 from __future__ import annotations
 
+import queue
 import threading
 from typing import Optional
 
@@ -20,6 +24,9 @@ CHANNELS = 1
 DTYPE = "int16"
 BLOCK_SIZE = 1024  # frames per callback
 
+# Sentinel pushed to the audio queue when recording stops.
+_AUDIO_QUEUE_SENTINEL = None
+
 
 class AudioRecorder:
     """
@@ -31,6 +38,10 @@ class AudioRecorder:
         ...
         audio_data = recorder.stop()   # returns numpy int16 array
         trimmed = trim_silence(audio_data)
+
+    While recording is active, raw PCM chunks (bytes) are also pushed to
+    ``recorder.audio_queue`` so that a streaming consumer can read them
+    in real time.  A *None* sentinel is pushed when recording stops.
     """
 
     def __init__(self, on_volume=None):
@@ -40,12 +51,19 @@ class AudioRecorder:
         self._recording = False
         self._on_volume = on_volume
 
+        # Queue for real-time streaming.  Each item is a ``bytes`` object
+        # containing raw LINEAR16 PCM, or *None* to signal end-of-stream.
+        self.audio_queue: queue.Queue[Optional[bytes]] = queue.Queue()
+
     def start(self):
         """Start recording audio."""
         with self._lock:
             if self._recording:
                 return
             self._frames = []
+            # Replace the queue so any old consumer referencing the
+            # previous queue is not confused.
+            self.audio_queue = queue.Queue()
             self._recording = True
 
         self._stream = sd.InputStream(
@@ -72,6 +90,9 @@ class AudioRecorder:
             self._stream.close()
             self._stream = None
 
+        # Signal end-of-stream to the streaming consumer.
+        self.audio_queue.put(_AUDIO_QUEUE_SENTINEL)
+
         with self._lock:
             if not self._frames:
                 return None
@@ -83,9 +104,18 @@ class AudioRecorder:
         """sounddevice callback — runs in audio thread."""
         if status:
             pass  # Ignore xruns silently
+
+        chunk = indata.copy()
+
         with self._lock:
             if self._recording:
-                self._frames.append(indata.copy())
+                self._frames.append(chunk)
+
+        # Push raw bytes to the streaming queue (non-blocking).
+        try:
+            self.audio_queue.put_nowait(chunk.tobytes())
+        except queue.Full:
+            pass  # drop chunk if queue is somehow full
 
         # Report live volume to the callback (if set)
         if self._on_volume is not None:
