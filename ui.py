@@ -478,23 +478,27 @@ class MainWindow(QMainWindow):
         self._macos_status_item = status_item
         self._macos_status_bar = status_bar   # keep reference so bar isn't GC'd
 
+    def show_window(self):
+        """Show the main window and bring it to the foreground."""
+        # On macOS the process may be an Accessory agent (no Dock icon) and
+        # won't be considered the "active" app by the window server.  We must
+        # explicitly activate it so the window actually lands in the foreground.
+        if platform.system() == "Darwin":
+            try:
+                from AppKit import NSApplication
+                NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+            except ImportError:
+                pass
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
     def _toggle_window(self):
         """Show the main window if hidden; hide it if visible."""
         if self.isVisible():
             self.hide()
         else:
-            # On macOS the process may be an Accessory agent (no Dock icon) and
-            # won't be considered the "active" app by the window server.  We must
-            # explicitly activate it so the window actually lands in the foreground.
-            if platform.system() == "Darwin":
-                try:
-                    from AppKit import NSApplication
-                    NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
-                except ImportError:
-                    pass
-            self.show()
-            self.raise_()
-            self.activateWindow()
+            self.show_window()
 
     @pyqtSlot(QSystemTrayIcon.ActivationReason)
     def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason):

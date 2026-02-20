@@ -188,6 +188,7 @@ class AppController(QObject):
             self._transcript_overlay.show_error_at_cursor(
                 "⚠  API key missing — open Settings and paste your Google Cloud API key"
             )
+            self.window.show_window()
             return
 
         # Configure modules with the latest key (no-op if key hasn't changed
@@ -440,8 +441,12 @@ def main():
     window = MainWindow()
     controller = AppController(window)  # noqa: F841 — prevent GC
 
-    # Do NOT show the main window on startup — the tray icon is the entry point.
+    # Do NOT show the main window on startup — the tray icon is the entry point,
+    # unless the API key is missing.
     window.set_status_idle()
+
+    if not window.get_api_key():
+        window.show_window()
 
     app.exec()
 
