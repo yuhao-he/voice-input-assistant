@@ -37,6 +37,8 @@ if _IS_MACOS:
         pass
 
 from recorder import AudioRecorder
+import transcriber as _transcriber
+import postprocess as _postprocess
 from transcriber import transcribe_streaming
 from postprocess import postprocess
 from sounds import play_start, play_stop
@@ -73,6 +75,12 @@ class AppController(QObject):
         self._generation_lock = threading.Lock()
         self._pending_timers: list[QTimer] = []
         self._last_external_app = None
+
+        # Apply any API key that was saved in a previous session.
+        saved_key = self.window.get_api_key()
+        if saved_key:
+            _transcriber.configure(saved_key)
+            _postprocess.configure(saved_key)
 
         # Connect window signals
         self.window.recording_requested.connect(self.on_start_recording)
@@ -173,6 +181,21 @@ class AppController(QObject):
     def on_start_recording(self):
         if self._is_recording:
             return
+
+        # ── Validate API key before doing anything ────────────────────────
+        api_key = self.window.get_api_key()
+        if not api_key:
+            self._transcript_overlay.show_error_at_cursor(
+                "⚠  API key missing — open Settings and paste your Google Cloud API key"
+            )
+            return
+
+        # Configure modules with the latest key (no-op if key hasn't changed
+        # because the cached client is only reset when configure() is called
+        # with a different value, but calling it every time is harmless).
+        _transcriber.configure(api_key)
+        _postprocess.configure(api_key)
+        # ─────────────────────────────────────────────────────────────────
 
         # First pass: immediately release focus from our window.
         handoff_ok = self._release_focus_to_input_app()

@@ -11,6 +11,7 @@ from PyQt6.QtCore import Qt, QSize, QRect, QSettings, QTimer, pyqtSignal, pyqtSl
 from PyQt6.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QGroupBox,
@@ -186,6 +187,30 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(central)
         layout.setSpacing(12)
 
+        # --- Google Cloud API Key group (top — required before anything else) ---
+        creds_group = QGroupBox("Google Cloud API Key")
+        creds_layout = QVBoxLayout(creds_group)
+
+        creds_layout.addWidget(QLabel(
+            "Required for Speech-to-Text and Gemini post-processing.\n"
+            "Create a key at console.cloud.google.com → APIs & Services → Credentials."
+        ))
+
+        key_row = QHBoxLayout()
+        self.api_key_input = QLineEdit()
+        self.api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.api_key_input.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        self.api_key_input.setPlaceholderText("Paste your Google Cloud API key here…")
+        key_row.addWidget(self.api_key_input)
+
+        self._show_key_cb = QCheckBox("Show")
+        self._show_key_cb.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._show_key_cb.toggled.connect(self._on_show_key_toggled)
+        key_row.addWidget(self._show_key_cb)
+
+        creds_layout.addLayout(key_row)
+        layout.addWidget(creds_group)
+
         # --- Settings group ---
         settings_group = QGroupBox("Settings")
         settings_layout = QVBoxLayout(settings_group)
@@ -326,6 +351,7 @@ class MainWindow(QMainWindow):
         self._hotkey_listener.start()
 
         # --- Auto-save on change ---
+        self.api_key_input.textChanged.connect(self._save_settings)
         self.language_combo.currentIndexChanged.connect(self._save_settings)
         self.postproc_prompt.textChanged.connect(self._save_settings)
 
@@ -513,6 +539,15 @@ class MainWindow(QMainWindow):
     # Public accessors
     # ------------------------------------------------------------------
 
+    def get_api_key(self) -> str:
+        """Return the Google Cloud API key (stripped)."""
+        return self.api_key_input.text().strip()
+
+    @pyqtSlot(bool)
+    def _on_show_key_toggled(self, checked: bool):
+        mode = QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password
+        self.api_key_input.setEchoMode(mode)
+
     def get_language_code(self) -> str:
         return self.language_combo.currentData()
 
@@ -632,6 +667,11 @@ class MainWindow(QMainWindow):
 
     def _restore_settings(self):
         """Load saved settings or apply defaults."""
+        # API key
+        saved_key = self._settings.value("api_key", "")
+        if saved_key:
+            self.api_key_input.setText(saved_key)
+
         # Language
         saved_lang = self._settings.value("language", None)
         if saved_lang is not None:
@@ -671,6 +711,7 @@ class MainWindow(QMainWindow):
 
     def _save_settings(self):
         """Persist current settings."""
+        self._settings.setValue("api_key", self.api_key_input.text().strip())
         self._settings.setValue("language", self.language_combo.currentData())
         self._settings.setValue("postproc_prompt", self.postproc_prompt.toPlainText())
         self._settings.setValue("boost_words", self.boost_words_input.text())

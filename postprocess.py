@@ -1,8 +1,11 @@
 """
-Post-process transcribed text via Gemini on Vertex AI.
+Post-process transcribed text via Gemini.
 
-Uses Application Default Credentials (the same ``gcloud auth
-application-default login`` that Speech-to-Text uses).
+Authentication uses a Google Cloud API key — the same key used for
+Speech-to-Text.  Call ``configure(api_key)`` once before use.
+
+Uses the direct Gemini API (generativelanguage.googleapis.com) rather than
+Vertex AI, so no GCP project ID or gcloud credentials are required.
 """
 
 from __future__ import annotations
@@ -10,29 +13,35 @@ from __future__ import annotations
 from typing import Optional
 
 from google import genai
-import google.auth
 
 _MODEL = "gemini-2.0-flash"
 
-# Lazy-initialised client
+# Lazy-initialised client — recreated whenever configure() is called.
 _client: Optional[genai.Client] = None
+_api_key: Optional[str] = None
+
+
+def configure(api_key: str) -> None:
+    """Set the API key used for all subsequent postprocess calls.
+
+    Resets the cached client so the next call creates a fresh one with the
+    new key.
+    """
+    global _client, _api_key
+    _api_key = api_key.strip() if api_key else ""
+    _client = None  # force re-creation on next call
 
 
 def _get_client() -> genai.Client:
-    """Return a Vertex AI–backed GenAI client, creating it on first call."""
+    """Return a Gemini client, creating it on first call."""
     global _client
     if _client is None:
-        _, project = google.auth.default()
-        if not project:
+        if not _api_key:
             raise RuntimeError(
-                "Could not determine GCP project. "
-                "Set it with:  gcloud config set project YOUR_PROJECT_ID"
+                "Google Cloud API key not configured. "
+                "Open Settings and paste your API key."
             )
-        _client = genai.Client(
-            vertexai=True,
-            project=project,
-            location="us-central1",
-        )
+        _client = genai.Client(api_key=_api_key)
     return _client
 
 

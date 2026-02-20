@@ -302,6 +302,28 @@ class TranscriptOverlay(QWidget):
 
     # -- public API -------------------------------------------------------
 
+    def show_error_at_cursor(self, msg: str, duration_ms: int = 4000):
+        """Show a transient error message near the cursor in light red.
+
+        The message auto-dismisses after *duration_ms* milliseconds.
+        """
+        seg_id = self._next_id
+        self._segments.append({"id": seg_id, "text": msg, "state": "error"})
+        self._next_id += 1
+
+        if not self.isVisible():
+            self._follow_cursor()
+            prev = _get_frontmost_app()
+            self.show()
+            _reactivate_app(prev)
+            self._follow_timer.start()
+
+        self._update_size()
+        self.update()
+
+        # Auto-dismiss this error segment after the given delay.
+        QTimer.singleShot(duration_ms, lambda: self.complete_segment(seg_id))
+
     def show_at_cursor(self):
         """Append a new active segment; show + start following the cursor."""
         self._segments.append({"id": self._next_id, "text": "", "state": "active"})
@@ -410,7 +432,14 @@ class TranscriptOverlay(QWidget):
 
         for seg in self._segments:
             escaped = html.escape(seg["text"])
-            if seg["state"] == "processing":
+            if seg["state"] == "error":
+                # Light red — signals a configuration / API error
+                parts.append(
+                    f'<span style="color:rgba(255,110,110,240);">'
+                    f'{escaped}'
+                    f'</span>'
+                )
+            elif seg["state"] == "processing":
                 # Semi-white + spinner appended inline
                 text_part = escaped if escaped else "…"
                 parts.append(

@@ -1,11 +1,12 @@
 """
-GCP Speech-to-Text **v2** caller using the ``google-cloud-speech`` library.
+GCP Speech-to-Text **v1** caller.
 
-Supports both batch (``transcribe``) and streaming (``transcribe_streaming``)
-recognition.
+Authentication uses a Google Cloud API key — no gcloud CLI or Application
+Default Credentials required.  Call ``configure(api_key)`` once before use.
 
-Authentication uses Application Default Credentials (ADC).
-Run ``gcloud auth application-default login`` before starting the app.
+Speech-to-Text v1 is used (instead of v2) because it does not require a
+GCP project ID in the recognizer path, which keeps the setup to a single
+copy-paste API key.
 """
 
 from __future__ import annotations
@@ -15,55 +16,39 @@ from typing import Callable, Iterator, Optional
 
 import numpy as np
 
-from google.cloud.speech_v2 import SpeechClient
-from google.cloud.speech_v2.types import cloud_speech
+from google.cloud import speech
 
-# Lazy-initialised clients (gRPC channel reuse across calls)
-_client: Optional[SpeechClient] = None          # global endpoint
-_client_regional: Optional[SpeechClient] = None  # regional endpoint for Chirp
-_project_id: Optional[str] = None
+# ---------------------------------------------------------------------------
+# Module-level state
+# ---------------------------------------------------------------------------
 
-_CHIRP_LOCATION = "us-central1"  # Chirp models require a regional endpoint
+_client: Optional[speech.SpeechClient] = None
+_api_key: Optional[str] = None
 
 
-def _get_client() -> tuple[SpeechClient, str]:
-    """Return a (SpeechClient, project_id) pair using the *global* endpoint."""
-    global _client, _project_id
+def configure(api_key: str) -> None:
+    """Set the API key used for all subsequent transcription calls.
+
+    Resets the cached client so the next call creates a fresh one with the
+    new key.
+    """
+    global _client, _api_key
+    _api_key = api_key.strip() if api_key else ""
+    _client = None  # force re-creation on next call
+
+
+def _get_client() -> speech.SpeechClient:
+    global _client
     if _client is None:
-        _init_project()
-        import google.auth
-        credentials, _ = google.auth.default()
-        _client = SpeechClient(credentials=credentials)
-    return _client, _project_id
-
-
-def _get_regional_client() -> tuple[SpeechClient, str]:
-    """Return a (SpeechClient, project_id) pair using the *regional* endpoint
-    required by Chirp models."""
-    global _client_regional, _project_id
-    if _client_regional is None:
-        _init_project()
-        import google.auth
-        credentials, _ = google.auth.default()
-        _client_regional = SpeechClient(
-            credentials=credentials,
-            client_options={"api_endpoint": f"{_CHIRP_LOCATION}-speech.googleapis.com"},
-        )
-    return _client_regional, _project_id
-
-
-def _init_project():
-    """Ensure _project_id is set."""
-    global _project_id
-    if _project_id is None:
-        import google.auth
-        _, project = google.auth.default()
-        if not project:
+        if not _api_key:
             raise RuntimeError(
-                "Could not determine GCP project. "
-                "Set it with:  gcloud config set project YOUR_PROJECT_ID"
+                "Google Cloud API key not configured. "
+                "Open Settings and paste your API key."
             )
-        _project_id = project
+        _client = speech.SpeechClient(
+            client_options={"api_key": _api_key}
+        )
+    return _client
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +61,7 @@ def transcribe(
     sample_rate: int = 16000,
 ) -> Optional[str]:
     """
-    Send audio to GCP Speech-to-Text v2 and return the transcript.
+    Send audio to GCP Speech-to-Text v1 and return the transcript.
 
     Parameters
     ----------
@@ -98,32 +83,24 @@ def transcribe(
     audio_bytes = audio.astype(np.int16).tobytes()
 
     try:
-        client, project_id = _get_client()
+        client = _get_client()
     except Exception as exc:
         print(f"[Transcriber] Failed to initialise client: {exc}")
         return None
 
-    config = cloud_speech.RecognitionConfig(
-        explicit_decoding_config=cloud_speech.ExplicitDecodingConfig(
-            encoding=cloud_speech.ExplicitDecodingConfig.AudioEncoding.LINEAR16,
-            sample_rate_hertz=sample_rate,
-            audio_channel_count=1,
-        ),
-        language_codes=[language_code],
+    config = speech.RecognitionConfig(
+        encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
+        sample_rate_hertz=sample_rate,
+        language_code=language_code,
         model="latest_short",
-        features=cloud_speech.RecognitionFeatures(
-            enable_automatic_punctuation=True,
-        ),
+        use_enhanced=True,
+        enable_automatic_punctuation=True,
     )
 
-    request = cloud_speech.RecognizeRequest(
-        recognizer=f"projects/{project_id}/locations/global/recognizers/_",
-        config=config,
-        content=audio_bytes,
-    )
+    audio_obj = speech.RecognitionAudio(content=audio_bytes)
 
     try:
-        response = client.recognize(request=request)
+        response = client.recognize(config=config, audio=audio_obj)
     except Exception as exc:
         print(f"[Transcriber] API call failed: {exc}")
         return None
@@ -141,57 +118,23 @@ def transcribe(
 # Streaming transcription
 # ---------------------------------------------------------------------------
 
-def _request_generator(
-    recognizer: str,
-    config: cloud_speech.RecognitionConfig,
+def _audio_generator(
     audio_queue: queue.Queue,
-) -> Iterator[cloud_speech.StreamingRecognizeRequest]:
+) -> Iterator[speech.StreamingRecognizeRequest]:
     """
-    Yield ``StreamingRecognizeRequest`` messages for the streaming API.
+    Yield audio-only ``StreamingRecognizeRequest`` messages.
 
-    1. First message: recognizer + streaming config (no audio).
-    2. Subsequent messages: raw audio bytes read from *audio_queue*.
+    In the v1 helper API the ``StreamingRecognitionConfig`` is passed as a
+    separate first argument to ``streaming_recognize``; requests therefore
+    carry *only* audio content.
 
     The generator terminates when it reads a *None* sentinel from the queue.
     """
-    # --- first request: configuration only ---
-    streaming_config = cloud_speech.StreamingRecognitionConfig(
-        config=config,
-        streaming_features=cloud_speech.StreamingRecognitionFeatures(
-            interim_results=True,
-        ),
-    )
-    yield cloud_speech.StreamingRecognizeRequest(
-        recognizer=recognizer,
-        streaming_config=streaming_config,
-    )
-
-    # --- subsequent requests: audio chunks ---
     while True:
         chunk = audio_queue.get()  # blocks until a chunk is available
         if chunk is None:
-            # Sentinel — recording stopped; end the stream.
             break
-        yield cloud_speech.StreamingRecognizeRequest(audio=chunk)
-
-
-def _build_adaptation(
-    boost_words: list[str],
-    boost: float = 10.0,
-) -> cloud_speech.SpeechAdaptation:
-    """Build a SpeechAdaptation proto that boosts the given words/phrases."""
-    print(f"[Streaming] Boost words: {boost_words}")
-    phrases = [
-        cloud_speech.PhraseSet.Phrase(value=w, boost=boost)
-        for w in boost_words
-    ]
-    return cloud_speech.SpeechAdaptation(
-        phrase_sets=[
-            cloud_speech.SpeechAdaptation.AdaptationPhraseSet(
-                inline_phrase_set=cloud_speech.PhraseSet(phrases=phrases)
-            )
-        ]
-    )
+        yield speech.StreamingRecognizeRequest(audio_content=chunk)
 
 
 def transcribe_streaming(
@@ -219,8 +162,7 @@ def transcribe_streaming(
         Called with the latest interim transcript string whenever a new
         streaming response arrives.
     boost_words : list of str, optional
-        Words or phrases to bias the recogniser towards.  Each entry is
-        submitted as a ``PhraseSet.Phrase`` with the given *boost_value*.
+        Words or phrases to bias the recogniser towards.
     boost_value : float
         Strength of the phrase boost (0 – 20).  Default is 10.0.
 
@@ -230,39 +172,41 @@ def transcribe_streaming(
         The final concatenated transcript, or *None* if nothing was recognised.
     """
     try:
-        client, project_id = _get_client()
+        client = _get_client()
     except Exception as exc:
         print(f"[Streaming] Failed to initialise client: {exc}")
         return None
 
-    recognizer = f"projects/{project_id}/locations/global/recognizers/_"
-
-    adaptation = _build_adaptation(boost_words, boost=boost_value) if boost_words else None
-
-    config = cloud_speech.RecognitionConfig(
-        explicit_decoding_config=cloud_speech.ExplicitDecodingConfig(
-            encoding=cloud_speech.ExplicitDecodingConfig.AudioEncoding.LINEAR16,
-            sample_rate_hertz=sample_rate,
-            audio_channel_count=1,
-        ),
-        language_codes=[language_code],
-        model="latest_long",
-        features=cloud_speech.RecognitionFeatures(
-            enable_automatic_punctuation=True,
-        ),
-        adaptation=adaptation,
+    speech_contexts = (
+        [speech.SpeechContext(phrases=boost_words, boost=boost_value)]
+        if boost_words
+        else []
     )
 
-    requests = _request_generator(recognizer, config, audio_queue)
+    config = speech.RecognitionConfig(
+        encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
+        sample_rate_hertz=sample_rate,
+        language_code=language_code,
+        model="latest_long",
+        use_enhanced=True,
+        enable_automatic_punctuation=True,
+        speech_contexts=speech_contexts,
+    )
+
+    streaming_config = speech.StreamingRecognitionConfig(
+        config=config,
+        interim_results=True,
+    )
+
+    # v1 helper: config is the first positional arg; requests carry audio only.
+    requests = _audio_generator(audio_queue)
 
     final_transcripts: list[str] = []
 
     try:
-        responses = client.streaming_recognize(requests=requests)
+        responses = client.streaming_recognize(streaming_config, requests)
 
         for response in responses:
-            # Collect all interim (non-final) pieces from this response
-            # so we can show the complete current hypothesis at once.
             interim_parts: list[str] = []
 
             for result in response.results:
@@ -277,9 +221,6 @@ def transcribe_streaming(
                 else:
                     interim_parts.append(transcript)
 
-            # After processing every result in this response, push
-            # one combined snapshot: all settled finals + all current
-            # interim segments joined together.
             if on_interim is not None:
                 current = "".join(final_transcripts + interim_parts).strip()
                 try:
