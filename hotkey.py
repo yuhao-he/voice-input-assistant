@@ -9,6 +9,7 @@ a signal to stop recording.
 from __future__ import annotations
 
 import threading
+import time
 from typing import Optional, Set, Callable
 
 from pynput import keyboard
@@ -68,6 +69,7 @@ class HotkeySignals(QObject):
     """Qt signals emitted by the hotkey listener."""
     hotkey_pressed = pyqtSignal()
     hotkey_released = pyqtSignal()
+    hotkey_double_pressed = pyqtSignal()
     cancel_requested = pyqtSignal()  # Escape pressed: cancel all in-flight work
     key_event = pyqtSignal(object, bool)  # (key, is_press) — used for hotkey capture mode
 
@@ -86,6 +88,7 @@ class HotkeyListener:
         self._main_key_down: bool = False
         self._listener: Optional[keyboard.Listener] = None
         self._capture_mode: bool = False  # When True, next key press sets the hotkey
+        self._last_press_time: float = 0.0
 
     # ------------------------------------------------------------------
     # Public API
@@ -146,7 +149,14 @@ class HotkeyListener:
             and not self._main_key_down
         ):
             self._main_key_down = True
-            self.signals.hotkey_pressed.emit()
+            
+            now = time.time()
+            if now - self._last_press_time < 0.4:  # 400ms double-tap window
+                self.signals.hotkey_double_pressed.emit()
+            else:
+                self.signals.hotkey_pressed.emit()
+            
+            self._last_press_time = now
 
     def _on_release(self, key):
         if self._capture_mode:

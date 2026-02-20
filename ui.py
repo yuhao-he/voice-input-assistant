@@ -339,6 +339,7 @@ class MainWindow(QMainWindow):
         # --- Connect hotkey listener signals ---
         self._hotkey_listener.signals.hotkey_pressed.connect(self._on_hotkey_pressed)
         self._hotkey_listener.signals.hotkey_released.connect(self._on_hotkey_released)
+        self._hotkey_listener.signals.hotkey_double_pressed.connect(self.show_window)
         self._hotkey_listener.signals.cancel_requested.connect(self._on_cancel_requested)
         self._hotkey_listener.signals.key_event.connect(self._on_capture_key_event)
 
