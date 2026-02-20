@@ -100,6 +100,36 @@ class AudioRecorder:
             self._frames = []
             return audio
 
+    def finalize(self, queue_ref: "queue.Queue") -> None:
+        """
+        End the recording associated with *queue_ref*.
+
+        If this recorder is still actively writing to *queue_ref* (i.e. no
+        new recording has started since the caller captured the reference),
+        stop the physical audio stream.  Either way, push the end-of-stream
+        sentinel into *queue_ref* so that any streaming consumer that is
+        blocked on it can terminate.
+
+        This method is used to implement a short *tail-recording* delay:
+        the caller captures ``recorder.audio_queue`` at hotkey-release time,
+        waits N ms, then calls ``recorder.finalize(captured_queue)`` so the
+        final fraction of audio is included before the stream closes.
+        """
+        should_stop_stream = False
+        with self._lock:
+            if self._recording and self.audio_queue is queue_ref:
+                self._recording = False
+                should_stop_stream = True
+
+        if should_stop_stream and self._stream is not None:
+            self._stream.stop()
+            self._stream.close()
+            self._stream = None
+
+        # Always push the sentinel so the streaming consumer for this
+        # specific recording can exit cleanly.
+        queue_ref.put(_AUDIO_QUEUE_SENTINEL)
+
     def _audio_callback(self, indata: np.ndarray, frames: int, time_info, status):
         """sounddevice callback — runs in audio thread."""
         if status:

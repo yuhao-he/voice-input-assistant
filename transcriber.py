@@ -175,11 +175,32 @@ def _request_generator(
         yield cloud_speech.StreamingRecognizeRequest(audio=chunk)
 
 
+def _build_adaptation(
+    boost_words: list[str],
+    boost: float = 10.0,
+) -> cloud_speech.SpeechAdaptation:
+    """Build a SpeechAdaptation proto that boosts the given words/phrases."""
+    print(f"[Streaming] Boost words: {boost_words}")
+    phrases = [
+        cloud_speech.PhraseSet.Phrase(value=w, boost=boost)
+        for w in boost_words
+    ]
+    return cloud_speech.SpeechAdaptation(
+        phrase_sets=[
+            cloud_speech.SpeechAdaptation.AdaptationPhraseSet(
+                inline_phrase_set=cloud_speech.PhraseSet(phrases=phrases)
+            )
+        ]
+    )
+
+
 def transcribe_streaming(
     audio_queue: queue.Queue,
     language_code: str = "en-US",
     sample_rate: int = 16000,
     on_interim: Optional[Callable[[str], None]] = None,
+    boost_words: Optional[list[str]] = None,
+    boost_value: float = 10.0,
 ) -> Optional[str]:
     """
     Perform **streaming** speech recognition, consuming audio chunks from
@@ -197,6 +218,11 @@ def transcribe_streaming(
     on_interim : callable, optional
         Called with the latest interim transcript string whenever a new
         streaming response arrives.
+    boost_words : list of str, optional
+        Words or phrases to bias the recogniser towards.  Each entry is
+        submitted as a ``PhraseSet.Phrase`` with the given *boost_value*.
+    boost_value : float
+        Strength of the phrase boost (0 – 20).  Default is 10.0.
 
     Returns
     -------
@@ -211,6 +237,8 @@ def transcribe_streaming(
 
     recognizer = f"projects/{project_id}/locations/global/recognizers/_"
 
+    adaptation = _build_adaptation(boost_words, boost=boost_value) if boost_words else None
+
     config = cloud_speech.RecognitionConfig(
         explicit_decoding_config=cloud_speech.ExplicitDecodingConfig(
             encoding=cloud_speech.ExplicitDecodingConfig.AudioEncoding.LINEAR16,
@@ -222,6 +250,7 @@ def transcribe_streaming(
         features=cloud_speech.RecognitionFeatures(
             enable_automatic_punctuation=True,
         ),
+        adaptation=adaptation,
     )
 
     requests = _request_generator(recognizer, config, audio_queue)

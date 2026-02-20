@@ -194,10 +194,12 @@ class AppController(QObject):
         # Kick off streaming transcription in a background thread.
         # Each job uses its own result_box so concurrent jobs don't clash.
         language = self.window.get_language_code()
+        boost_words = self.window.get_boost_words()
+        boost_value = self.window.get_boost_value()
         result_box: list[str | None] = [None]
         thread = threading.Thread(
             target=self._streaming_worker,
-            args=(self.recorder.audio_queue, language, result_box),
+            args=(self.recorder.audio_queue, language, boost_words, boost_value, result_box),
             daemon=True,
         )
         self._active_job = {"thread": thread, "result_box": result_box}
@@ -209,9 +211,14 @@ class AppController(QObject):
             return
         self._is_recording = False
 
-        # Stopping the recorder pushes a None sentinel into the audio
-        # queue, which causes the streaming generator to end gracefully.
-        self.recorder.stop()
+        # Capture the active queue *before* the tail delay so the finalizer
+        # always sends the sentinel to the correct recording even if a new
+        # session starts within the 200 ms window.
+        captured_queue = self.recorder.audio_queue
+
+        # Keep recording for 200 ms after the hotkey is released so the
+        # trailing edge of the user's speech is captured.
+        QTimer.singleShot(200, lambda: self.recorder.finalize(captured_queue))
 
         play_stop()
 
@@ -254,7 +261,7 @@ class AppController(QObject):
 
         self.window.set_status_idle()
 
-    def _streaming_worker(self, audio_queue, language, result_box: list):
+    def _streaming_worker(self, audio_queue, language, boost_words, boost_value, result_box: list):
         """
         Runs in a background thread.  Streams audio to the API and
         stores the final transcript in *result_box[0]*.
@@ -263,6 +270,8 @@ class AppController(QObject):
             audio_queue=audio_queue,
             language_code=language,
             on_interim=self._on_interim_callback,
+            boost_words=boost_words if boost_words else None,
+            boost_value=boost_value,
         )
         result_box[0] = text
 

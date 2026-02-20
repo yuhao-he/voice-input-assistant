@@ -10,6 +10,7 @@ from PyQt6.QtGui import QColor, QFont, QPainter, QPen
 from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
+    QDoubleSpinBox,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -211,6 +212,42 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(hotkey_group)
 
+        # --- Boost Words group ---
+        boost_group = QGroupBox("Boost Words")
+        boost_layout = QVBoxLayout(boost_group)
+        boost_layout.addWidget(QLabel(
+            "Comma-separated words/phrases to boost in speech recognition (e.g. proper nouns, jargon)."
+        ))
+        boost_row = QHBoxLayout()
+        self.boost_words_input = QLineEdit()
+        self.boost_words_input.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        self.boost_words_input.setPlaceholderText(
+            "e.g.  TensorFlow, Kubernetes, gRPC"
+        )
+        boost_row.addWidget(self.boost_words_input)
+
+        boost_row.addWidget(QLabel("Boost:"))
+        self.boost_value_spin = QDoubleSpinBox()
+        self.boost_value_spin.setRange(0.0, 20.0)
+        self.boost_value_spin.setSingleStep(0.5)
+        self.boost_value_spin.setValue(10.0)
+        self.boost_value_spin.setDecimals(1)
+        self.boost_value_spin.setFixedWidth(68)
+        self.boost_value_spin.setToolTip(
+            "How strongly to bias the recogniser toward the listed words (0 – 20)."
+        )
+        boost_row.addWidget(self.boost_value_spin)
+
+        self.boost_update_btn = QPushButton("Update")
+        self.boost_update_btn.setFixedWidth(80)
+        self.boost_update_btn.clicked.connect(self._on_boost_update)
+        boost_row.addWidget(self.boost_update_btn)
+        boost_layout.addLayout(boost_row)
+        layout.addWidget(boost_group)
+
+        # Internal list of active boost words (populated by _on_boost_update)
+        self._boost_words: list[str] = []
+
         # --- Post transcription editing group ---
         postproc_group = QGroupBox("Post Transcription Editing")
         postproc_layout = QVBoxLayout(postproc_group)
@@ -273,6 +310,14 @@ class MainWindow(QMainWindow):
     def get_postproc_prompt(self) -> str:
         """Return the post-processing prompt (empty string means disabled)."""
         return self.postproc_prompt.toPlainText().strip()
+
+    def get_boost_words(self) -> list[str]:
+        """Return the current list of active boost words/phrases."""
+        return list(self._boost_words)
+
+    def get_boost_value(self) -> float:
+        """Return the current boost strength."""
+        return self.boost_value_spin.value()
 
     # ------------------------------------------------------------------
     # Status helpers
@@ -348,6 +393,25 @@ class MainWindow(QMainWindow):
     def _on_cancel_requested(self):
         self.cancel_requested.emit()
 
+    @pyqtSlot()
+    def _on_boost_update(self):
+        """Parse the boost-words input and update the active word list."""
+        raw = self.boost_words_input.text()
+        words = [w.strip() for w in raw.split(",") if w.strip()]
+        boost = self.boost_value_spin.value()
+        self._boost_words = words
+        self._save_settings()
+        # Brief visual confirmation on the button
+        self.boost_update_btn.setText("✓")
+        QTimer.singleShot(1200, lambda: self.boost_update_btn.setText("Update"))
+        if words:
+            print(
+                f"[BoostWords] Injected {len(words)} phrase(s) into Cloud Speech-to-Text "
+                f"(boost={boost}): {words}"
+            )
+        else:
+            print("[BoostWords] Cleared — no boost phrases will be sent to the API.")
+
     def _clear_initial_focus(self):
         focused = QApplication.focusWidget()
         if focused is not None:
@@ -371,6 +435,20 @@ class MainWindow(QMainWindow):
         saved_prompt = self._settings.value("postproc_prompt", "")
         self.postproc_prompt.setPlainText(saved_prompt or "")
 
+        # Boost words
+        saved_boost = self._settings.value("boost_words", "")
+        if saved_boost:
+            self.boost_words_input.setText(saved_boost)
+            self._boost_words = [w.strip() for w in saved_boost.split(",") if w.strip()]
+
+        # Boost value
+        saved_boost_value = self._settings.value("boost_value", None)
+        if saved_boost_value is not None:
+            try:
+                self.boost_value_spin.setValue(float(saved_boost_value))
+            except (ValueError, TypeError):
+                pass
+
         # Hotkey
         saved_modifiers = self._settings.value("hotkey/modifiers", None)
         saved_main_key = self._settings.value("hotkey/main_key", None)
@@ -386,6 +464,8 @@ class MainWindow(QMainWindow):
         """Persist current settings."""
         self._settings.setValue("language", self.language_combo.currentData())
         self._settings.setValue("postproc_prompt", self.postproc_prompt.toPlainText())
+        self._settings.setValue("boost_words", self.boost_words_input.text())
+        self._settings.setValue("boost_value", self.boost_value_spin.value())
         if self._current_combo is not None:
             self._settings.setValue("hotkey/modifiers", list(self._current_combo.modifiers))
             self._settings.setValue("hotkey/main_key", self._current_combo.main_key)
