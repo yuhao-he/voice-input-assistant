@@ -191,11 +191,11 @@ class AppController(QObject):
             self.window.show_window()
             return
 
-        # Configure modules with the latest key (no-op if key hasn't changed
-        # because the cached client is only reset when configure() is called
-        # with a different value, but calling it every time is harmless).
-        _transcriber.configure(api_key)
-        _postprocess.configure(api_key)
+        # Configure modules with the latest key only if it changed
+        if api_key != getattr(self, "_current_api_key", None):
+            _transcriber.configure(api_key)
+            _postprocess.configure(api_key)
+            self._current_api_key = api_key
         # ─────────────────────────────────────────────────────────────────
 
         # First pass: immediately release focus from our window.
