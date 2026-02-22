@@ -57,14 +57,26 @@ class AudioRecorder:
 
     def start(self):
         """Start recording audio."""
+        stream_to_close = None
+        old_queue = None
+
         with self._lock:
             if self._recording:
-                return
+                # Forcefully end the previous recording session
+                self._recording = False
+                stream_to_close = self._stream
+                old_queue = self.audio_queue
+
             self._frames = []
             # Replace the queue so any old consumer referencing the
             # previous queue is not confused.
             self.audio_queue = queue.Queue()
             self._recording = True
+
+        if stream_to_close is not None:
+            old_queue.put(_AUDIO_QUEUE_SENTINEL)
+            stream_to_close.stop()
+            stream_to_close.close()
 
         self._stream = sd.InputStream(
             samplerate=SAMPLE_RATE,

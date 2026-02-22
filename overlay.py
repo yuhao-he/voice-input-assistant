@@ -341,10 +341,8 @@ class TranscriptOverlay(QWidget):
 
     def set_text(self, text: str):
         """Update the last active segment's text (called with live interim transcript)."""
-        for seg in reversed(self._segments):
-            if seg["state"] == "active":
-                seg["text"] = text
-                break
+        if self._segments and self._segments[-1]["state"] == "active":
+            self._segments[-1]["text"] = text
         self._update_size()
         self.update()
 

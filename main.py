@@ -367,10 +367,22 @@ class AppController(QObject):
         def _do_paste():
             if generation != self._current_generation():
                 return
-            self._kb.press(_PASTE_MODIFIER)
+                
+            # If the user is currently holding the paste modifier (e.g. because it's part
+            # of their hotkey combo), we don't synthesize a press/release for it, because
+            # releasing it could trigger a hotkey_released event in the listener.
+            paste_mod_str = "cmd" if _IS_MACOS else "ctrl"
+            active_mods = self.window._hotkey_listener._active_modifiers
+            needs_modifier = paste_mod_str not in active_mods
+            
+            if needs_modifier:
+                self._kb.press(_PASTE_MODIFIER)
+            
             self._kb.press("v")
             self._kb.release("v")
-            self._kb.release(_PASTE_MODIFIER)
+            
+            if needs_modifier:
+                self._kb.release(_PASTE_MODIFIER)
 
         self._schedule_timer(80, _do_paste)
 

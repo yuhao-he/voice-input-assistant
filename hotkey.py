@@ -160,11 +160,10 @@ class HotkeyListener:
             return
 
         if key in _MODIFIER_MAP:
-            self._active_modifiers.discard(_MODIFIER_MAP[key])
-            # If a modifier is released while main key is held, treat as release
-            if self._main_key_down:
-                self._main_key_down = False
-                self.signals.hotkey_released.emit()
+            mod_name = _MODIFIER_MAP[key]
+            self._active_modifiers.discard(mod_name)
+            # As per your suggestion, we no longer abort recording when a modifier
+            # is released. We ONLY care when the main hotkey itself is released.
             return
 
         if self._combo is None or not self._combo.is_valid():
