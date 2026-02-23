@@ -83,6 +83,7 @@ LANGUAGES = [
     ("Japanese", "日本語", "ja-JP"),
     ("Korean", "한국어", "ko-KR"),
     ("Portuguese (BR)", "Português – Brasil", "pt-BR"),
+    ("Swedish", "Svenska – Sverige", "sv-SE"),
     ("Hindi", "हिन्दी – भारत", "hi-IN"),
 ]
 
