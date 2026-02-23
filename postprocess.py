@@ -56,7 +56,7 @@ def _get_client() -> genai.Client:
         _http_client = httpx.Client(http2=True)
         _client = genai.Client(
             api_key=_api_key,
-            http_options={'client': _http_client}
+            http_options={'httpx_client': _http_client}
         )
     return _client
 
@@ -88,6 +88,7 @@ def postprocess(transcript: str, prompt: str) -> str:
     )
 
     try:
+        print(f"[Postprocess] Full prompt to Gemini:\n{full_prompt}")
         client = _get_client()
         response = client.models.generate_content(
             model=_MODEL,
