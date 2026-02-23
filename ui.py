@@ -174,6 +174,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Voice Input — GCP Speech-to-Text")
         self.setMinimumWidth(480)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.Tool)
 
         # Hotkey listener
         self._hotkey_listener = HotkeyListener()
