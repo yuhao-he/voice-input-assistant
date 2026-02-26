@@ -7,6 +7,7 @@ Advanced tab  — boost words and AI post-processing prompt.
 
 from __future__ import annotations
 
+import json
 import platform
 
 from PyQt6.QtCore import Qt, QSize, QRect, QSettings, QTimer, pyqtSignal, pyqtSlot
@@ -19,15 +20,19 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QMainWindow,
     QPlainTextEdit,
     QPushButton,
     QRadioButton,
+    QScrollArea,
     QStyledItemDelegate,
     QStyleOptionViewItem,
     QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -302,6 +307,44 @@ class MainWindow(QMainWindow):
         # Internal list of active boost words (populated by _on_boost_update)
         self._boost_words: list[str] = []
 
+        # Word Replacements group
+        replacements_group = QGroupBox("Word Replacements")
+        replacements_layout = QVBoxLayout(replacements_group)
+        replacements_layout.addWidget(QLabel(
+            "After transcription, these exact phrases are replaced before pasting."
+        ))
+
+        self.replacements_table = QTableWidget(0, 2)
+        self.replacements_table.setHorizontalHeaderLabels(["Find", "Replace With"])
+        self.replacements_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.Stretch
+        )
+        self.replacements_table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.Stretch
+        )
+        self.replacements_table.verticalHeader().setVisible(False)
+        self.replacements_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.replacements_table.setEditTriggers(
+            QTableWidget.EditTrigger.DoubleClicked |
+            QTableWidget.EditTrigger.AnyKeyPressed
+        )
+        self.replacements_table.setMinimumHeight(140)
+        self.replacements_table.itemChanged.connect(self._save_settings)
+        replacements_layout.addWidget(self.replacements_table)
+
+        repl_btn_row = QHBoxLayout()
+        repl_btn_row.addStretch()
+        self.repl_new_btn = QPushButton("New")
+        self.repl_new_btn.setFixedWidth(72)
+        self.repl_new_btn.clicked.connect(self._on_replacement_new)
+        self.repl_delete_btn = QPushButton("Delete")
+        self.repl_delete_btn.setFixedWidth(72)
+        self.repl_delete_btn.clicked.connect(self._on_replacement_delete)
+        repl_btn_row.addWidget(self.repl_new_btn)
+        repl_btn_row.addWidget(self.repl_delete_btn)
+        replacements_layout.addLayout(repl_btn_row)
+        advanced_layout.addWidget(replacements_group)
+
         # AI Post-processing group
         postproc_group = QGroupBox("AI Post Transcription Editing")
         postproc_layout = QVBoxLayout(postproc_group)
@@ -310,12 +353,17 @@ class MainWindow(QMainWindow):
         self.postproc_prompt.setPlaceholderText(
             "e.g.  Fix grammar and repetition, and keep the original words as much as possible."
         )
-        self.postproc_prompt.setMaximumHeight(160)
+        self.postproc_prompt.setMinimumHeight(240)
         postproc_layout.addWidget(self.postproc_prompt)
         advanced_layout.addWidget(postproc_group)
 
         advanced_layout.addStretch()
-        tabs.addTab(advanced_widget, "Advanced")
+
+        advanced_scroll = QScrollArea()
+        advanced_scroll.setWidget(advanced_widget)
+        advanced_scroll.setWidgetResizable(True)
+        advanced_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        tabs.addTab(advanced_scroll, "Advanced")
 
 
         # ── Hotkey listener signals ────────────────────────────────────
@@ -340,7 +388,7 @@ class MainWindow(QMainWindow):
 
         # Start with no editor focus so typing doesn't land in the prompt box.
         QTimer.singleShot(0, self._clear_initial_focus)
-        QTimer.singleShot(0, self._lock_size)
+        self.setMaximumHeight(680)
 
         # ── System tray / menu-bar icon ────────────────────────────────
         self._tray = TrayManager(
@@ -417,6 +465,21 @@ class MainWindow(QMainWindow):
         """Return True if tap-to-record mode is enabled."""
         return self.radio_tap.isChecked()
 
+    def get_replacements(self) -> list[tuple[str, str]]:
+        """Return the list of (find, replace) word-replacement pairs.
+
+        Rows where either cell is empty are skipped.
+        """
+        pairs = []
+        for row in range(self.replacements_table.rowCount()):
+            find_item = self.replacements_table.item(row, 0)
+            repl_item = self.replacements_table.item(row, 1)
+            find = find_item.text().strip() if find_item else ""
+            repl = repl_item.text().strip() if repl_item else ""
+            if find and repl:
+                pairs.append((find, repl))
+        return pairs
+
     # ------------------------------------------------------------------
     # Status helpers
     # ------------------------------------------------------------------
@@ -489,6 +552,29 @@ class MainWindow(QMainWindow):
         self.cancel_requested.emit()
 
     @pyqtSlot()
+    def _on_replacement_new(self):
+        """Add a blank row, save immediately, then start editing the Find cell."""
+        self.replacements_table.blockSignals(True)
+        row = self.replacements_table.rowCount()
+        self.replacements_table.insertRow(row)
+        self.replacements_table.setItem(row, 0, QTableWidgetItem(""))
+        self.replacements_table.setItem(row, 1, QTableWidgetItem(""))
+        self.replacements_table.blockSignals(False)
+        self._save_settings()
+        print("saving")
+        self.replacements_table.setCurrentCell(row, 0)
+        self.replacements_table.editItem(self.replacements_table.item(row, 0))
+
+    def _on_replacement_delete(self):
+        """Delete all selected rows."""
+        rows = sorted(
+            {idx.row() for idx in self.replacements_table.selectedIndexes()},
+            reverse=True,
+        )
+        for row in rows:
+            self.replacements_table.removeRow(row)
+        self._save_settings()
+
     def _on_boost_update(self):
         """Parse the boost-words input and update the active word list."""
         raw = self.boost_words_input.text()
@@ -517,9 +603,6 @@ class MainWindow(QMainWindow):
         if focused is not None:
             focused.clearFocus()
 
-    def _lock_size(self):
-        """Freeze the window to its natural size so it cannot be resized."""
-        self.setFixedHeight(self.sizeHint().height())
 
     # ------------------------------------------------------------------
     # Settings persistence (QSettings — macOS plist / Windows registry)
@@ -527,6 +610,26 @@ class MainWindow(QMainWindow):
 
     def _restore_settings(self):
         """Load saved settings or apply defaults."""
+        # Block every widget that has an auto-save signal connected, so that
+        # restoring one value cannot trigger _save_settings and overwrite the
+        # not-yet-restored values (e.g. the radio button fires idToggled which
+        # would save an empty replacements table before it is populated).
+        self._rec_mode_group.blockSignals(True)
+        self.api_key_input.blockSignals(True)
+        self.language_combo.blockSignals(True)
+        self.postproc_prompt.blockSignals(True)
+        self.replacements_table.blockSignals(True)
+
+        try:
+            self._restore_settings_inner()
+        finally:
+            self._rec_mode_group.blockSignals(False)
+            self.api_key_input.blockSignals(False)
+            self.language_combo.blockSignals(False)
+            self.postproc_prompt.blockSignals(False)
+            self.replacements_table.blockSignals(False)
+
+    def _restore_settings_inner(self):
         saved_key = self._settings.value("api_key", "")
         if saved_key:
             self.api_key_input.setText(saved_key)
@@ -569,6 +672,16 @@ class MainWindow(QMainWindow):
         else:
             self.radio_push_to_talk.setChecked(True)
 
+        try:
+            pairs = json.loads(self._settings.value("replacements", "[]") or "[]")
+        except (ValueError, TypeError):
+            pairs = []
+        for find, repl in pairs:
+            row = self.replacements_table.rowCount()
+            self.replacements_table.insertRow(row)
+            self.replacements_table.setItem(row, 0, QTableWidgetItem(str(find)))
+            self.replacements_table.setItem(row, 1, QTableWidgetItem(str(repl)))
+
     def _save_settings(self):
         """Persist current settings."""
         self._settings.setValue("api_key", self.api_key_input.text().strip())
@@ -577,6 +690,9 @@ class MainWindow(QMainWindow):
         self._settings.setValue("boost_words", self.boost_words_input.text())
         self._settings.setValue("boost_value", self.boost_value_spin.value())
         self._settings.setValue("tap_to_record", self.radio_tap.isChecked())
+        print(f"saving replacements: {self.get_replacements()}")
+        self._settings.setValue("replacements", json.dumps(self.get_replacements()))
+        self._settings.sync()
         if self._current_combo is not None:
             self._settings.setValue("hotkey/modifiers", list(self._current_combo.modifiers))
             self._settings.setValue("hotkey/main_key", self._current_combo.main_key)
@@ -588,5 +704,6 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         """Hide to the system tray instead of quitting."""
         event.ignore()
+        self._save_settings()
         self.hide()
         self._tray.notify_first_close()

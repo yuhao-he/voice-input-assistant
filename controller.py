@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import threading
 
 from PyQt6.QtCore import QMimeData, QObject, QTimer, pyqtSignal, pyqtSlot
@@ -250,11 +251,14 @@ class AppController(QObject):
 
         self.window.set_status_transcribing()
 
+        # Snapshot UI state on the main thread — _wait_for_streaming runs in a
+        # background thread where Qt widget access is not safe.
         prompt = self.window.get_postproc_prompt()
+        replacements = self.window.get_replacements()
         generation = self._current_generation()
         threading.Thread(
             target=self._wait_for_streaming,
-            args=(thread_ref, result_box, prompt, seg_id, generation),
+            args=(thread_ref, result_box, prompt, replacements, seg_id, generation),
             daemon=True,
         ).start()
 
@@ -285,6 +289,7 @@ class AppController(QObject):
         thread: threading.Thread | None,
         result_box: list,
         prompt: str,
+        replacements: list[tuple[str, str]],
         seg_id: int,
         generation: int,
     ):
@@ -311,6 +316,15 @@ class AppController(QObject):
 
         if generation != self._current_generation():
             return
+
+        # Apply word replacements (whole-word, case-insensitive)
+        for find, repl in replacements:
+            text = re.sub(
+                r'\b' + re.escape(find) + r'\b',
+                repl,
+                text,
+                flags=re.IGNORECASE,
+            )
 
         self.transcription_done.emit(text, seg_id, generation)
 
