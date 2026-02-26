@@ -134,7 +134,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Voice Input — GCP Speech-to-Text")
-        self.setMinimumWidth(480)
+        self.setFixedWidth(620)
 
         # Hotkey listener
         self._hotkey_listener = HotkeyListener()
@@ -294,7 +294,7 @@ class MainWindow(QMainWindow):
         self.postproc_prompt.setPlaceholderText(
             "e.g.  Fix grammar and repetition, and keep the original words as much as possible."
         )
-        self.postproc_prompt.setMaximumHeight(80)
+        self.postproc_prompt.setMaximumHeight(160)
         postproc_layout.addWidget(self.postproc_prompt)
         advanced_layout.addWidget(postproc_group)
 
@@ -324,6 +324,7 @@ class MainWindow(QMainWindow):
 
         # Start with no editor focus so typing doesn't land in the prompt box.
         QTimer.singleShot(0, self._clear_initial_focus)
+        QTimer.singleShot(0, self._lock_size)
 
         # ── System tray / menu-bar icon ────────────────────────────────
         self._tray = TrayManager(
@@ -495,6 +496,10 @@ class MainWindow(QMainWindow):
         focused = QApplication.focusWidget()
         if focused is not None:
             focused.clearFocus()
+
+    def _lock_size(self):
+        """Freeze the window to its natural size so it cannot be resized."""
+        self.setFixedHeight(self.sizeHint().height())
 
     # ------------------------------------------------------------------
     # Settings persistence (QSettings — macOS plist / Windows registry)
