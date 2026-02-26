@@ -13,6 +13,7 @@ from PyQt6.QtCore import Qt, QSize, QRect, QSettings, QTimer, pyqtSignal, pyqtSl
 from PyQt6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
 from PyQt6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -23,6 +24,7 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QPlainTextEdit,
     QPushButton,
+    QRadioButton,
     QStyledItemDelegate,
     QStyleOptionViewItem,
     QTabWidget,
@@ -252,6 +254,20 @@ class MainWindow(QMainWindow):
         advanced_layout.setSpacing(12)
         advanced_layout.setContentsMargins(12, 12, 12, 12)
 
+        # Recording mode group
+        rec_mode_group = QGroupBox("Recording Mode")
+        rec_mode_layout = QVBoxLayout(rec_mode_group)
+        self._rec_mode_group = QButtonGroup(self)
+        self.radio_push_to_talk = QRadioButton("Push to talk — hold to record, release to stop")
+        self.radio_tap = QRadioButton("Press once to start, press again to stop")
+        self.radio_push_to_talk.setChecked(True)
+        self._rec_mode_group.addButton(self.radio_push_to_talk, 0)
+        self._rec_mode_group.addButton(self.radio_tap, 1)
+        rec_mode_layout.addWidget(self.radio_push_to_talk)
+        rec_mode_layout.addWidget(self.radio_tap)
+        self._rec_mode_group.idToggled.connect(lambda _id, checked: self._save_settings() if checked else None)
+        advanced_layout.addWidget(rec_mode_group)
+
         # Boost Words group
         boost_group = QGroupBox("Boost Words")
         boost_layout = QVBoxLayout(boost_group)
@@ -396,6 +412,10 @@ class MainWindow(QMainWindow):
     def get_boost_value(self) -> float:
         """Return the current boost strength."""
         return self.boost_value_spin.value()
+
+    def get_tap_to_record(self) -> bool:
+        """Return True if tap-to-record mode is enabled."""
+        return self.radio_tap.isChecked()
 
     # ------------------------------------------------------------------
     # Status helpers
@@ -543,6 +563,12 @@ class MainWindow(QMainWindow):
         self._current_combo = combo
         self.hotkey_label.setText(str(combo))
 
+        tap_to_record = self._settings.value("tap_to_record", False)
+        if tap_to_record in (True, "true"):
+            self.radio_tap.setChecked(True)
+        else:
+            self.radio_push_to_talk.setChecked(True)
+
     def _save_settings(self):
         """Persist current settings."""
         self._settings.setValue("api_key", self.api_key_input.text().strip())
@@ -550,6 +576,7 @@ class MainWindow(QMainWindow):
         self._settings.setValue("postproc_prompt", self.postproc_prompt.toPlainText())
         self._settings.setValue("boost_words", self.boost_words_input.text())
         self._settings.setValue("boost_value", self.boost_value_spin.value())
+        self._settings.setValue("tap_to_record", self.radio_tap.isChecked())
         if self._current_combo is not None:
             self._settings.setValue("hotkey/modifiers", list(self._current_combo.modifiers))
             self._settings.setValue("hotkey/main_key", self._current_combo.main_key)

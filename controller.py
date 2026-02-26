@@ -175,6 +175,8 @@ class AppController(QObject):
     @pyqtSlot()
     def on_start_recording(self):
         if self._is_recording:
+            if self.window.get_tap_to_record():
+                self._do_stop_recording()
             return
 
         api_key = self.window.get_api_key()
@@ -216,6 +218,15 @@ class AppController(QObject):
 
     @pyqtSlot()
     def on_stop_recording(self):
+        """Called on hotkey release — ignored in toggle mode."""
+        if not self._is_recording:
+            return
+        if self.window.get_tap_to_record():
+            return  # in toggle mode, only a second key press stops recording
+        self._do_stop_recording()
+
+    def _do_stop_recording(self):
+        """Shared stop logic used by both push-to-talk release and toggle second press."""
         if not self._is_recording:
             return
         self._is_recording = False
