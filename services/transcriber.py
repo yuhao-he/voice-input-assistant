@@ -50,69 +50,6 @@ def _get_client() -> speech.SpeechClient:
 
 
 # ---------------------------------------------------------------------------
-# Batch (non-streaming) transcription
-# ---------------------------------------------------------------------------
-
-def transcribe(
-    audio: np.ndarray,
-    language_code: str = "en-US",
-    sample_rate: int = 16000,
-) -> Optional[str]:
-    """
-    Send audio to GCP Speech-to-Text v1 and return the transcript.
-
-    Parameters
-    ----------
-    audio : np.ndarray
-        1-D int16 PCM audio samples.
-    language_code : str
-        BCP-47 language code, e.g. "en-US".
-    sample_rate : int
-        Sample rate of the audio.
-
-    Returns
-    -------
-    str or None
-        The transcribed text, or *None* on failure / empty result.
-    """
-    if audio is None or len(audio) == 0:
-        return None
-
-    audio_bytes = audio.astype(np.int16).tobytes()
-
-    try:
-        client = _get_client()
-    except Exception as exc:
-        print(f"[Transcriber] Failed to initialise client: {exc}")
-        return None
-
-    config = speech.RecognitionConfig(
-        encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
-        sample_rate_hertz=sample_rate,
-        language_code=language_code,
-        model="latest_short",
-        use_enhanced=True,
-        enable_automatic_punctuation=True,
-    )
-
-    audio_obj = speech.RecognitionAudio(content=audio_bytes)
-
-    try:
-        response = client.recognize(config=config, audio=audio_obj)
-    except Exception as exc:
-        print(f"[Transcriber] API call failed: {exc}")
-        return None
-
-    transcripts = []
-    for result in response.results:
-        if result.alternatives:
-            transcripts.append(result.alternatives[0].transcript)
-
-    full_text = " ".join(transcripts).strip()
-    return full_text if full_text else None
-
-
-# ---------------------------------------------------------------------------
 # Streaming transcription
 # ---------------------------------------------------------------------------
 

@@ -1,6 +1,8 @@
 """
-PyQt6 main window: language selection, hotkey configuration,
-post-transcription editing, and status bar.
+PyQt6 main window: tabbed settings UI for Voice Input.
+
+Settings tab  — API key, hotkey, language selection.
+Advanced tab  — boost words and AI post-processing prompt.
 """
 
 from __future__ import annotations
@@ -8,7 +10,7 @@ from __future__ import annotations
 import platform
 
 from PyQt6.QtCore import Qt, QSize, QRect, QSettings, QTimer, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap
+from PyQt6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -19,57 +21,17 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
-    QMenu,
     QPlainTextEdit,
     QPushButton,
-    QStatusBar,
     QStyledItemDelegate,
     QStyleOptionViewItem,
-    QSystemTrayIcon,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from hotkey import HotkeyCombo, HotkeyListener, key_to_str, _MODIFIER_MAP
-
-
-# ── macOS native status-bar support (AppKit / PyObjC) ─────────────────────────
-# We bypass QSystemTrayIcon on macOS because it has a known timing issue with
-# NSApplicationActivationPolicyAccessory that prevents the icon from appearing.
-# AppKit (pyobjc-framework-Cocoa) is already a dependency of this project.
-_APPKIT_AVAILABLE = False
-try:
-    import objc as _objc
-    from AppKit import (
-        NSObject as _NSObject,
-        NSStatusBar as _NSStatusBar,
-        NSVariableStatusItemLength as _NSVariableStatusItemLength,
-        NSMenu as _NSMenu,
-        NSMenuItem as _NSMenuItem,
-    )
-
-    class _MacOSMenuTarget(_NSObject):
-        """Objective-C action target that forwards menu clicks to the Python window."""
-
-        def init(self):
-            self = _objc.super(_MacOSMenuTarget, self).init()
-            if self is None:
-                return None
-            self._vi_window = None
-            return self
-
-        def toggleWindow_(self, sender):   # noqa: N802
-            if self._vi_window is not None:
-                self._vi_window._toggle_window()
-
-        def quitApp_(self, sender):        # noqa: N802
-            if self._vi_window is not None:
-                self._vi_window._quit_app()
-
-    _APPKIT_AVAILABLE = True
-except Exception:
-    pass
-# ──────────────────────────────────────────────────────────────────────────────
+from services.hotkey import HotkeyCombo, HotkeyListener, key_to_str, _MODIFIER_MAP
+from ui.tray import TrayManager
 
 
 # Common language codes for the dropdown: (display_name, description, code)
@@ -91,8 +53,7 @@ LANGUAGES = [
 class _TwoLineDelegate(QStyledItemDelegate):
     """
     Combo-box item delegate that draws a bold title on the first line
-    and a smaller grey description on the second, like the Cursor
-    privacy-mode dropdown.
+    and a smaller grey description on the second.
     """
 
     _PADDING = 6
@@ -114,7 +75,6 @@ class _TwoLineDelegate(QStyledItemDelegate):
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index):
         self.initStyleOption(option, index)
 
-        # Draw hover / selection background as light grey instead of system blue
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         from PyQt6.QtWidgets import QStyle
@@ -153,11 +113,11 @@ class _TwoLineDelegate(QStyledItemDelegate):
         title_font.setBold(True)
         desc_font = self._make_smaller_font(option.font, self._DESC_SCALE)
 
-        from PyQt6.QtGui import QFontMetrics
         title_h = QFontMetrics(title_font).height()
         desc_h = QFontMetrics(desc_font).height()
         total = title_h + self._LINE_SPACING + desc_h + self._PADDING * 2
         return QSize(option.rect.width(), total)
+
 
 # Default hotkey: F3
 DEFAULT_HOTKEY = HotkeyCombo(modifiers=set(), main_key="f3")
@@ -182,16 +142,25 @@ class MainWindow(QMainWindow):
         self._capturing_hotkey = False
         self._capture_modifiers: set[str] = set()
 
-        # Central widget
+        # Central widget with tab container
         central = QWidget()
         self.setCentralWidget(central)
-        layout = QVBoxLayout(central)
-        layout.setSpacing(12)
+        outer_layout = QVBoxLayout(central)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
 
-        # --- Google Cloud API Key group (top — required before anything else) ---
+        tabs = QTabWidget()
+        outer_layout.addWidget(tabs)
+
+        # ── Settings tab ───────────────────────────────────────────────
+        settings_widget = QWidget()
+        settings_layout = QVBoxLayout(settings_widget)
+        settings_layout.setSpacing(12)
+        settings_layout.setContentsMargins(12, 12, 12, 12)
+
+        # Google Cloud API Key group
         creds_group = QGroupBox("Google Cloud API Key")
         creds_layout = QVBoxLayout(creds_group)
-
         creds_layout.addWidget(QLabel(
             "Required for Speech-to-Text and Gemini post-processing.\n"
             "Create a key at console.cloud.google.com → APIs & Services → Credentials."
@@ -208,15 +177,12 @@ class MainWindow(QMainWindow):
         self._show_key_cb.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._show_key_cb.toggled.connect(self._on_show_key_toggled)
         key_row.addWidget(self._show_key_cb)
-
         creds_layout.addLayout(key_row)
-        layout.addWidget(creds_group)
+        settings_layout.addWidget(creds_group)
 
-        # --- Settings group ---
-        settings_group = QGroupBox("Settings")
-        settings_layout = QVBoxLayout(settings_group)
-
-        # Language (two-line delegate: bold title + grey description)
+        # Language group
+        lang_group = QGroupBox("Settings")
+        lang_group_layout = QVBoxLayout(lang_group)
         lang_row = QHBoxLayout()
         lang_row.addWidget(QLabel("Language:"))
         self.language_combo = QComboBox()
@@ -263,25 +229,30 @@ class MainWindow(QMainWindow):
             idx = self.language_combo.count() - 1
             self.language_combo.setItemData(idx, description, Qt.ItemDataRole.UserRole + 1)
         lang_row.addWidget(self.language_combo)
-        settings_layout.addLayout(lang_row)
+        lang_group_layout.addLayout(lang_row)
+        settings_layout.addWidget(lang_group)
 
-        layout.addWidget(settings_group)
-
-        # --- Hotkey group ---
+        # Hotkey group
         hotkey_group = QGroupBox("Hotkey (Push-to-Talk)")
         hotkey_layout = QHBoxLayout(hotkey_group)
-
         self.hotkey_label = QLabel(str(DEFAULT_HOTKEY))
         self.hotkey_label.setStyleSheet("font-weight: bold; font-size: 14px;")
         hotkey_layout.addWidget(self.hotkey_label)
-
         self.hotkey_btn = QPushButton("Set Hotkey")
         self.hotkey_btn.clicked.connect(self._start_hotkey_capture)
         hotkey_layout.addWidget(self.hotkey_btn)
+        settings_layout.addWidget(hotkey_group)
 
-        layout.addWidget(hotkey_group)
+        settings_layout.addStretch()
+        tabs.addTab(settings_widget, "Settings")
 
-        # --- Boost Words group ---
+        # ── Advanced tab ───────────────────────────────────────────────
+        advanced_widget = QWidget()
+        advanced_layout = QVBoxLayout(advanced_widget)
+        advanced_layout.setSpacing(12)
+        advanced_layout.setContentsMargins(12, 12, 12, 12)
+
+        # Boost Words group
         boost_group = QGroupBox("Boost Words")
         boost_layout = QVBoxLayout(boost_group)
         boost_layout.addWidget(QLabel(
@@ -290,9 +261,7 @@ class MainWindow(QMainWindow):
         boost_row = QHBoxLayout()
         self.boost_words_input = QLineEdit()
         self.boost_words_input.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
-        self.boost_words_input.setPlaceholderText(
-            "e.g.  TensorFlow, Kubernetes, gRPC"
-        )
+        self.boost_words_input.setPlaceholderText("e.g.  TensorFlow, Kubernetes, gRPC")
         boost_row.addWidget(self.boost_words_input)
 
         boost_row.addWidget(QLabel("Boost:"))
@@ -312,12 +281,12 @@ class MainWindow(QMainWindow):
         self.boost_update_btn.clicked.connect(self._on_boost_update)
         boost_row.addWidget(self.boost_update_btn)
         boost_layout.addLayout(boost_row)
-        layout.addWidget(boost_group)
+        advanced_layout.addWidget(boost_group)
 
         # Internal list of active boost words (populated by _on_boost_update)
         self._boost_words: list[str] = []
 
-        # --- Post transcription editing group ---
+        # AI Post-processing group
         postproc_group = QGroupBox("AI Post Transcription Editing")
         postproc_layout = QVBoxLayout(postproc_group)
         self.postproc_prompt = QPlainTextEdit()
@@ -327,21 +296,20 @@ class MainWindow(QMainWindow):
         )
         self.postproc_prompt.setMaximumHeight(80)
         postproc_layout.addWidget(self.postproc_prompt)
-        layout.addWidget(postproc_group)
+        advanced_layout.addWidget(postproc_group)
 
-        # --- Status bar ---
-        self.status_bar = QStatusBar()
-        self.setStatusBar(self.status_bar)
-        self._set_status("Idle")
+        advanced_layout.addStretch()
+        tabs.addTab(advanced_widget, "Advanced")
 
-        # --- Connect hotkey listener signals ---
+
+        # ── Hotkey listener signals ────────────────────────────────────
         self._hotkey_listener.signals.hotkey_pressed.connect(self._on_hotkey_pressed)
         self._hotkey_listener.signals.hotkey_released.connect(self._on_hotkey_released)
         self._hotkey_listener.signals.toggle_settings_requested.connect(self._toggle_window)
         self._hotkey_listener.signals.cancel_requested.connect(self._on_cancel_requested)
         self._hotkey_listener.signals.key_event.connect(self._on_capture_key_event)
 
-        # --- Restore saved settings (or fall back to defaults) ---
+        # ── Restore saved settings ─────────────────────────────────────
         self._settings = QSettings()
         self._restore_settings()
 
@@ -349,7 +317,7 @@ class MainWindow(QMainWindow):
         self._hotkey_listener.set_hotkey(self._current_combo)
         self._hotkey_listener.start()
 
-        # --- Auto-save on change ---
+        # ── Auto-save on change ────────────────────────────────────────
         self.api_key_input.textChanged.connect(self._save_settings)
         self.language_combo.currentIndexChanged.connect(self._save_settings)
         self.postproc_prompt.textChanged.connect(self._save_settings)
@@ -357,131 +325,19 @@ class MainWindow(QMainWindow):
         # Start with no editor focus so typing doesn't land in the prompt box.
         QTimer.singleShot(0, self._clear_initial_focus)
 
-        # System tray / menu-bar icon — keeps the app alive when the window is hidden.
-        self._tray_notified = False
-        self._tray_icon: QSystemTrayIcon | None = None   # used on Linux
-        self._macos_status_item = None                   # used on macOS
-        self._macos_menu_delegate = None                 # strong ref to ObjC delegate
-        if platform.system() == "Darwin" and _APPKIT_AVAILABLE:
-            self._setup_macos_native_tray()
-        else:
-            self._tray_icon = self._setup_tray_icon()
+        # ── System tray / menu-bar icon ────────────────────────────────
+        self._tray = TrayManager(
+            parent_widget=self,
+            on_toggle=self._toggle_window,
+            on_quit=self._quit_app,
+        )
 
     # ------------------------------------------------------------------
-    # System tray
+    # Window management
     # ------------------------------------------------------------------
-
-    def _make_mic_icon(self) -> QIcon:
-        """Draw a simple microphone icon programmatically (no image file needed)."""
-        size = 64
-        pixmap = QPixmap(size, size)
-        pixmap.fill(Qt.GlobalColor.transparent)
-
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-        color = QColor(220, 220, 220)  # light grey — legible on both dark and light trays
-        pen = QPen(color)
-        pen.setWidth(3)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        painter.setPen(pen)
-        painter.setBrush(color)
-
-        cx = size // 2  # 32
-
-        # ── Capsule (rounded rect) ────────────────────────────────────
-        cap_w, cap_h, cap_r = 16, 24, 8
-        painter.drawRoundedRect(cx - cap_w // 2, 6, cap_w, cap_h, cap_r, cap_r)
-
-        # ── Stand arc — U-shape embracing the bottom of the capsule ──
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        stand_r = 14
-        arc_cy = 6 + cap_h  # y-centre of the arc = bottom edge of capsule = 30
-        # Arc rect centred at (cx, arc_cy)
-        painter.drawArc(
-            cx - stand_r, arc_cy - stand_r,
-            2 * stand_r, 2 * stand_r,
-            0,           # start at 3-o'clock (right side)
-            -180 * 16,   # clockwise 180° → left side, passing through the bottom
-        )
-
-        # ── Stem ──────────────────────────────────────────────────────
-        stem_top = arc_cy + stand_r  # bottom of the arc circle
-        stem_bot = 54
-        painter.drawLine(cx, stem_top, cx, stem_bot)
-
-        # ── Base ──────────────────────────────────────────────────────
-        painter.drawLine(cx - 10, stem_bot, cx + 10, stem_bot)
-
-        painter.end()
-        return QIcon(pixmap)
-
-    def _setup_tray_icon(self) -> QSystemTrayIcon:
-        """Create and return a QSystemTrayIcon (used on Linux / Windows)."""
-        if not QSystemTrayIcon.isSystemTrayAvailable():
-            print("[Tray] System tray not available on this desktop environment.")
-
-        tray = QSystemTrayIcon(self._make_mic_icon(), parent=self)
-        tray.setToolTip("Voice Input — GCP Speech-to-Text")
-
-        menu = QMenu()
-        show_action = menu.addAction("Show / Hide Settings")
-        show_action.triggered.connect(self._toggle_window)
-        menu.addSeparator()
-        quit_action = menu.addAction("Quit Voice Input")
-        quit_action.triggered.connect(self._quit_app)
-
-        tray.setContextMenu(menu)
-        tray.activated.connect(self._on_tray_activated)
-        tray.show()
-        return tray
-
-    def _setup_macos_native_tray(self):
-        """Create a native NSStatusItem in the macOS menu bar.
-
-        QSystemTrayIcon has a timing issue with NSApplicationActivationPolicyAccessory
-        that prevents the Qt-managed NSStatusItem from appearing reliably.  Using
-        AppKit directly sidesteps that entirely.
-        """
-        status_bar = _NSStatusBar.systemStatusBar()
-        status_item = status_bar.statusItemWithLength_(_NSVariableStatusItemLength)
-
-        # Use the mic SF-symbol-style emoji as the button title.
-        # (Setting an NSImage from the Qt pixmap is possible but adds complexity.)
-        status_item.button().setTitle_("🎙")
-        status_item.button().setToolTip_("Voice Input — GCP Speech-to-Text")
-
-        # Build the drop-down menu.
-        menu = _NSMenu.new()
-
-        delegate = _MacOSMenuTarget.alloc().init()
-        delegate._vi_window = self
-        self._macos_menu_delegate = delegate  # keep a strong Python reference
-
-        show_item = _NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            "Show / Hide Settings", "toggleWindow:", ""
-        )
-        show_item.setTarget_(delegate)
-        menu.addItem_(show_item)
-
-        menu.addItem_(_NSMenuItem.separatorItem())
-
-        quit_item = _NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            "Quit Voice Input", "quitApp:", ""
-        )
-        quit_item.setTarget_(delegate)
-        menu.addItem_(quit_item)
-
-        status_item.setMenu_(menu)
-        self._macos_status_item = status_item
-        self._macos_status_bar = status_bar   # keep reference so bar isn't GC'd
 
     def show_window(self):
         """Show the main window and bring it to the foreground."""
-        # On macOS the process may be an Accessory agent (no Dock icon) and
-        # won't be considered the "active" app by the window server.  We must
-        # explicitly activate it so the window actually lands in the foreground.
         if platform.system() == "Darwin":
             try:
                 from AppKit import NSApplication
@@ -499,32 +355,11 @@ class MainWindow(QMainWindow):
         else:
             self.show_window()
 
-    @pyqtSlot(QSystemTrayIcon.ActivationReason)
-    def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason):
-        """Toggle window visibility when the tray icon is clicked.
-
-        On macOS, clicking the menu-bar icon always produces a ``Context``
-        activation (the context menu pops up); ``Trigger`` is used on
-        Windows/Linux for a plain left-click.  We handle both so the icon
-        is tappable on every platform, while still letting the context menu
-        appear normally.
-        """
-        if reason in (
-            QSystemTrayIcon.ActivationReason.Trigger,
-            QSystemTrayIcon.ActivationReason.DoubleClick,
-        ):
-            self._toggle_window()
-
     def _quit_app(self):
         """Save settings, stop the hotkey listener, and exit cleanly."""
         self._save_settings()
         self._hotkey_listener.stop()
-        # Remove the native macOS status item so it disappears immediately on exit.
-        if self._macos_status_item is not None:
-            try:
-                _NSStatusBar.systemStatusBar().removeStatusItem_(self._macos_status_item)
-            except Exception:
-                pass
+        self._tray.cleanup()
         QApplication.instance().quit()
 
     # ------------------------------------------------------------------
@@ -539,17 +374,12 @@ class MainWindow(QMainWindow):
         super().mousePressEvent(event)
 
     # ------------------------------------------------------------------
-    # Public accessors
+    # Public accessors (used by AppController)
     # ------------------------------------------------------------------
 
     def get_api_key(self) -> str:
         """Return the Google Cloud API key (stripped)."""
         return self.api_key_input.text().strip()
-
-    @pyqtSlot(bool)
-    def _on_show_key_toggled(self, checked: bool):
-        mode = QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password
-        self.api_key_input.setEchoMode(mode)
 
     def get_language_code(self) -> str:
         return self.language_combo.currentData()
@@ -570,17 +400,14 @@ class MainWindow(QMainWindow):
     # Status helpers
     # ------------------------------------------------------------------
 
-    def _set_status(self, text: str):
-        self.status_bar.showMessage(text)
-
     def set_status_idle(self):
-        self._set_status("Idle — press hotkey to record")
+        pass
 
     def set_status_recording(self):
-        self._set_status("🎙️  Recording…")
+        pass
 
     def set_status_transcribing(self):
-        self._set_status("⏳  Transcribing…")
+        pass
 
     # ------------------------------------------------------------------
     # Hotkey capture
@@ -625,7 +452,7 @@ class MainWindow(QMainWindow):
         self._save_settings()
 
     # ------------------------------------------------------------------
-    # Hotkey press / release (forwarded as signals)
+    # Hotkey press / release (forwarded as signals to the controller)
     # ------------------------------------------------------------------
 
     @pyqtSlot()
@@ -659,6 +486,11 @@ class MainWindow(QMainWindow):
         else:
             print("[BoostWords] Cleared — no boost phrases will be sent to the API.")
 
+    @pyqtSlot(bool)
+    def _on_show_key_toggled(self, checked: bool):
+        mode = QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password
+        self.api_key_input.setEchoMode(mode)
+
     def _clear_initial_focus(self):
         focused = QApplication.focusWidget()
         if focused is not None:
@@ -670,12 +502,10 @@ class MainWindow(QMainWindow):
 
     def _restore_settings(self):
         """Load saved settings or apply defaults."""
-        # API key
         saved_key = self._settings.value("api_key", "")
         if saved_key:
             self.api_key_input.setText(saved_key)
 
-        # Language
         saved_lang = self._settings.value("language", None)
         if saved_lang is not None:
             for i in range(self.language_combo.count()):
@@ -683,17 +513,14 @@ class MainWindow(QMainWindow):
                     self.language_combo.setCurrentIndex(i)
                     break
 
-        # Post-processing prompt
         saved_prompt = self._settings.value("postproc_prompt", "")
         self.postproc_prompt.setPlainText(saved_prompt or "")
 
-        # Boost words
         saved_boost = self._settings.value("boost_words", "")
         if saved_boost:
             self.boost_words_input.setText(saved_boost)
             self._boost_words = [w.strip() for w in saved_boost.split(",") if w.strip()]
 
-        # Boost value
         saved_boost_value = self._settings.value("boost_value", None)
         if saved_boost_value is not None:
             try:
@@ -701,7 +528,6 @@ class MainWindow(QMainWindow):
             except (ValueError, TypeError):
                 pass
 
-        # Hotkey
         saved_modifiers = self._settings.value("hotkey/modifiers", None)
         saved_main_key = self._settings.value("hotkey/main_key", None)
         if saved_main_key is not None:
@@ -728,24 +554,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def closeEvent(self, event):
-        """Hide to the system tray instead of quitting.
-
-        The app only truly exits when the user selects "Quit Voice Input"
-        from the tray context menu (which calls _quit_app).
-        """
+        """Hide to the system tray instead of quitting."""
         event.ignore()
         self.hide()
-        # Show a one-time balloon so the user knows where to find the app.
-        # (Only available via QSystemTrayIcon on Linux; skip silently on macOS.)
-        if not self._tray_notified:
-            self._tray_notified = True
-            if (
-                self._tray_icon is not None
-                and self._tray_icon.supportsMessages()
-            ):
-                self._tray_icon.showMessage(
-                    "Voice Input",
-                    "Still running in the background — click the tray icon to reopen settings.",
-                    QSystemTrayIcon.MessageIcon.Information,
-                    3000,
-                )
+        self._tray.notify_first_close()

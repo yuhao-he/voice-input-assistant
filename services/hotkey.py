@@ -138,7 +138,7 @@ class HotkeyListener:
             return
 
         key_str = key_to_str(key)
-        
+
         if key_str == "q" and self._active_modifiers == {"ctrl", "shift", "alt"}:
             self.signals.toggle_settings_requested.emit()
             return
@@ -162,8 +162,6 @@ class HotkeyListener:
         if key in _MODIFIER_MAP:
             mod_name = _MODIFIER_MAP[key]
             self._active_modifiers.discard(mod_name)
-            # As per your suggestion, we no longer abort recording when a modifier
-            # is released. We ONLY care when the main hotkey itself is released.
             return
 
         if self._combo is None or not self._combo.is_valid():

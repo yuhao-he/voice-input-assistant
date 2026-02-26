@@ -32,7 +32,7 @@ def configure(api_key: str) -> None:
     global _client, _api_key, _http_client
     _api_key = api_key.strip() if api_key else ""
     _client = None  # force re-creation on next call
-    
+
     if _http_client is not None:
         try:
             _http_client.close()
@@ -50,7 +50,7 @@ def _get_client() -> genai.Client:
                 "Google Cloud API key not configured. "
                 "Open Settings and paste your API key."
             )
-            
+
         # Create a persistent HTTP client to keep the TLS connection alive
         # between rapid, consecutive transcription requests.
         _http_client = httpx.Client(http2=True)
