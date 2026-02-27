@@ -1,14 +1,16 @@
 """
-AppController — wires together recording, transcription, and auto-paste.
+AppController — wires together recording, transcription, and the chat
+history overlay.
 
   hotkey press  → sound chirp + transcript overlay + start streaming
-  hotkey release → sound chirp + finish streaming → post-process → auto-paste
+  hotkey release → sound chirp + finish streaming → post-process
 
-While the hotkey is held, audio is streamed to the Speech-to-Text API
-and the live transcript is displayed in a floating overlay near the cursor.
+Recording mode is auto-detected:
+  - Hold hotkey >= 400 ms → push-to-talk (release stops recording)
+  - Tap hotkey < 400 ms   → tap mode (second press stops recording)
 
-On transcription, the text is pasted into the currently focused input
-via a clipboard-swap technique (save → set → paste keystroke → restore).
+On transcription the text appears in the chat-history overlay with
+Insert / Copy / Edit actions.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ import os
 import platform
 import re
 import threading
+import time
 
 from PyQt6.QtCore import QMimeData, QObject, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import QApplication
@@ -41,7 +44,10 @@ import services.postprocess as _postprocess
 from services.transcriber import transcribe_streaming
 from services.postprocess import postprocess
 from ui.overlay import TranscriptOverlay
+from ui.chat_overlay import ChatHistoryOverlay
 from ui.window import MainWindow
+
+_TAP_THRESHOLD = 0.4  # seconds — hold shorter = tap mode
 
 
 class AppController(QObject):
@@ -51,8 +57,8 @@ class AppController(QObject):
     blocking the UI.
     """
 
-    transcription_done = pyqtSignal(str, int, int)   # (text, seg_id, generation)
-    transcription_failed = pyqtSignal(str, int, int) # (msg, seg_id, generation)
+    transcription_done = pyqtSignal(str, int, int)   # (text, msg_id, generation)
+    transcription_failed = pyqtSignal(str, int, int) # (msg, msg_id, generation)
     interim_transcript = pyqtSignal(str)             # emitted with live transcript text
 
     def __init__(self, window: MainWindow):
@@ -60,18 +66,27 @@ class AppController(QObject):
         self.window = window
         self.recorder = AudioRecorder()
 
-        self.__kb = None  # created lazily to avoid Quartz/Qt startup race
+        self.__kb = None
 
-        # Transcript overlay
+        # Transcript overlay (live, during recording)
         self._transcript_overlay = TranscriptOverlay()
 
-        # Streaming state — per-job containers, keyed by segment id
-        self._active_job: dict | None = None
+        # Chat history overlay (shown after recording stops)
+        self._chat_overlay = ChatHistoryOverlay()
+
+        # Recording state
         self._is_recording = False
+        self._press_time: float = 0.0
+        self._is_tap_mode: bool = False
+        self._active_job: dict | None = None
+
+        # Generation counter — bumped on Escape to cancel all pending work
         self._generation = 0
         self._generation_lock = threading.Lock()
+
         self._pending_timers: list[QTimer] = []
         self._last_external_app = None
+        self._current_api_key: str | None = None
 
         # Apply any API key that was saved in a previous session.
         saved_key = self.window.get_api_key()
@@ -91,8 +106,7 @@ class AppController(QObject):
         # Live transcript updates → overlay
         self.interim_transcript.connect(self._transcript_overlay.set_text)
 
-        # Keep a best-effort pointer to the last non-self foreground app so
-        # pressing hotkey while this window is focused can hand focus back.
+        # Keep a best-effort pointer to the last non-self foreground app
         self._focus_probe_timer = QTimer(self)
         self._focus_probe_timer.setInterval(250)
         self._focus_probe_timer.timeout.connect(self._capture_frontmost_external_app)
@@ -100,13 +114,11 @@ class AppController(QObject):
 
     @property
     def _kb(self):
-        """Lazily create the pynput keyboard controller on first use."""
         if self.__kb is None:
             self.__kb = KbController()
         return self.__kb
 
     def _on_interim_callback(self, text: str):
-        """Called from the streaming thread — emit a Qt signal to cross threads safely."""
         self.interim_transcript.emit(text)
 
     def _capture_frontmost_external_app(self):
@@ -120,7 +132,6 @@ class AppController(QObject):
             pass
 
     def _release_focus_to_input_app(self) -> bool:
-        """Try to hand focus to a non-VoiceInput app. Returns True on success."""
         focused = QApplication.focusWidget()
         if focused is not None:
             focused.clearFocus()
@@ -153,7 +164,6 @@ class AppController(QObject):
             return self._generation
 
     def _schedule_timer(self, delay_ms: int, callback):
-        """Track UI timers so Escape can cancel pending paste/restore actions."""
         timer = QTimer(self)
         timer.setSingleShot(True)
 
@@ -173,11 +183,15 @@ class AppController(QObject):
             timer.deleteLater()
         self._pending_timers.clear()
 
+    # ------------------------------------------------------------------
+    # Recording start / stop
+    # ------------------------------------------------------------------
+
     @pyqtSlot()
     def on_start_recording(self):
         if self._is_recording:
-            if self.window.get_tap_to_record():
-                self._do_stop_recording()
+            # Second press while recording → stop (tap mode)
+            self._do_stop_recording()
             return
 
         api_key = self.window.get_api_key()
@@ -193,6 +207,9 @@ class AppController(QObject):
             _postprocess.configure(api_key)
             self._current_api_key = api_key
 
+        # Hide the chat overlay (keep messages in memory for history)
+        self._chat_overlay.hide_keep_state()
+
         handoff_ok = self._release_focus_to_input_app()
         if not handoff_ok and self.window.isActiveWindow():
             self.window.showMinimized()
@@ -204,6 +221,8 @@ class AppController(QObject):
         self.window.set_status_recording()
         self.recorder.start()
         self._is_recording = True
+        self._press_time = time.monotonic()
+        self._is_tap_mode = False
 
         language = self.window.get_language_code()
         boost_words = self.window.get_boost_words()
@@ -219,31 +238,39 @@ class AppController(QObject):
 
     @pyqtSlot()
     def on_stop_recording(self):
-        """Called on hotkey release — ignored in toggle mode."""
+        """Called on hotkey release — auto-detects push-to-talk vs tap mode."""
         if not self._is_recording:
             return
-        if self.window.get_tap_to_record():
-            return  # in toggle mode, only a second key press stops recording
+        elapsed = time.monotonic() - self._press_time
+        if elapsed < _TAP_THRESHOLD:
+            self._is_tap_mode = True
+            return
         self._do_stop_recording()
 
     def _do_stop_recording(self):
-        """Shared stop logic used by both push-to-talk release and toggle second press."""
         if not self._is_recording:
             return
         self._is_recording = False
 
-        # Capture the active queue *before* the tail delay so the finalizer
-        # always sends the sentinel to the correct recording even if a new
-        # session starts within the 200 ms window.
         captured_queue = self.recorder.audio_queue
-
-        # Keep recording for 200 ms after the hotkey is released so the
-        # trailing edge of the user's speech is captured.
         QTimer.singleShot(200, lambda: self.recorder.finalize(captured_queue))
 
         play_stop()
 
-        seg_id = self._transcript_overlay.freeze_active_segment()
+        # Lock the overlay and capture its geometry + text
+        self._transcript_overlay.lock()
+        locked_rect = self._transcript_overlay.get_locked_rect()
+        locked_text = self._transcript_overlay.get_locked_text()
+
+        # Transfer into ChatHistoryOverlay as a processing bubble
+        msg_id = self._chat_overlay.add_processing_message(
+            locked_text,
+            locked_rect,
+            on_insert=self._do_insert,
+        )
+
+        # Hide the transcript overlay — the chat overlay now owns the visual
+        self._transcript_overlay.dismiss()
 
         job = self._active_job
         thread_ref = job["thread"] if job else None
@@ -251,14 +278,12 @@ class AppController(QObject):
 
         self.window.set_status_transcribing()
 
-        # Snapshot UI state on the main thread — _wait_for_streaming runs in a
-        # background thread where Qt widget access is not safe.
         prompt = self.window.get_postproc_prompt()
         replacements = self.window.get_replacements()
         generation = self._current_generation()
         threading.Thread(
             target=self._wait_for_streaming,
-            args=(thread_ref, result_box, prompt, replacements, seg_id, generation),
+            args=(thread_ref, result_box, prompt, replacements, msg_id, generation),
             daemon=True,
         ).start()
 
@@ -270,11 +295,15 @@ class AppController(QObject):
 
         self.recorder.stop()
         self._transcript_overlay.dismiss()
+        self._chat_overlay.cancel_processing()
         self._cancel_pending_timers()
         self.window.set_status_idle()
 
+    # ------------------------------------------------------------------
+    # Background workers
+    # ------------------------------------------------------------------
+
     def _streaming_worker(self, audio_queue, language, boost_words, boost_value, result_box: list):
-        """Runs in a background thread. Streams audio to the API and stores the result."""
         text = transcribe_streaming(
             audio_queue=audio_queue,
             language_code=language,
@@ -290,13 +319,9 @@ class AppController(QObject):
         result_box: list,
         prompt: str,
         replacements: list[tuple[str, str]],
-        seg_id: int,
+        msg_id: int,
         generation: int,
     ):
-        """
-        Runs in a background thread. Waits for the streaming thread to finish,
-        applies post-processing, and emits the result paired with *seg_id*.
-        """
         if thread is not None:
             thread.join()
 
@@ -306,7 +331,7 @@ class AppController(QObject):
         text = result_box[0]
 
         if not text:
-            self.transcription_failed.emit("No transcription returned.", seg_id, generation)
+            self.transcription_failed.emit("No transcription returned.", msg_id, generation)
             return
 
         if prompt:
@@ -317,7 +342,6 @@ class AppController(QObject):
         if generation != self._current_generation():
             return
 
-        # Apply word replacements (whole-word, case-insensitive)
         for find, repl in replacements:
             text = re.sub(
                 r'\b' + re.escape(find) + r'\b',
@@ -326,35 +350,29 @@ class AppController(QObject):
                 flags=re.IGNORECASE,
             )
 
-        self.transcription_done.emit(text, seg_id, generation)
+        self.transcription_done.emit(text, msg_id, generation)
 
     # ------------------------------------------------------------------
-    # Clipboard-swap auto-paste
+    # Clipboard-swap auto-paste (used by chat overlay Insert button)
     # ------------------------------------------------------------------
 
-    @pyqtSlot(str, int, int)
-    def _on_transcription_done(self, text: str, seg_id: int, generation: int):
-        if generation != self._current_generation():
-            return
-
-        print(f"\n>>> {text}\n")
-
-        self._transcript_overlay.complete_segment(seg_id)
-
+    def _do_insert(self, text: str):
+        """
+        Perform a clipboard-swap paste of *text* into the currently focused
+        external application.
+        """
         clipboard = QApplication.clipboard()
 
-        # 1. Save current clipboard contents
         saved_mime = QMimeData()
         source_mime = clipboard.mimeData()
         if source_mime is not None:
             for fmt in source_mime.formats():
                 saved_mime.setData(fmt, source_mime.data(fmt))
 
-        # 2. Put transcription text into clipboard
         clipboard.setText(text)
 
-        # 3. Schedule the paste keystroke via QTimer so the event loop
-        #    can process the clipboard ownership change first.
+        generation = self._current_generation()
+
         def _do_paste():
             if generation != self._current_generation():
                 return
@@ -374,7 +392,6 @@ class AppController(QObject):
 
         self._schedule_timer(80, _do_paste)
 
-        # 4. Restore original clipboard after paste has had time to complete
         def _restore():
             if generation != self._current_generation():
                 return
@@ -382,15 +399,29 @@ class AppController(QObject):
 
         self._schedule_timer(350, _restore)
 
-        if not self._transcript_overlay.isVisible():
+    # ------------------------------------------------------------------
+    # Transcription result handlers
+    # ------------------------------------------------------------------
+
+    @pyqtSlot(str, int, int)
+    def _on_transcription_done(self, text: str, msg_id: int, generation: int):
+        if generation != self._current_generation():
+            return
+
+        print(f"\n>>> {text}\n")
+
+        self._chat_overlay.complete_processing(msg_id, text)
+
+        if not self._is_recording:
             self.window.set_status_idle()
 
     @pyqtSlot(str, int, int)
-    def _on_transcription_failed(self, msg: str, seg_id: int, generation: int):
+    def _on_transcription_failed(self, msg: str, msg_id: int, generation: int):
         if generation != self._current_generation():
             return
 
         print(f"[Info] {msg}")
-        self._transcript_overlay.complete_segment(seg_id)
-        if not self._transcript_overlay.isVisible():
+        self._chat_overlay.remove_message(msg_id)
+
+        if not self._is_recording:
             self.window.set_status_idle()

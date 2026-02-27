@@ -11,7 +11,7 @@ from __future__ import annotations
 import html
 import platform
 
-from PyQt6.QtCore import Qt, QTimer, QPoint, QRectF
+from PyQt6.QtCore import Qt, QTimer, QPoint, QRect, QRectF
 from PyQt6.QtGui import (
     QColor, QPainter, QCursor,
     QFont, QFontMetrics, QTextOption, QTextDocument,
@@ -118,9 +118,29 @@ class TranscriptOverlay(QWidget):
         self._follow_timer.setInterval(30)
         self._follow_timer.timeout.connect(self._follow_cursor)
 
+        self._locked_rect: QRect | None = None
+        self._locked_text: str = ""
+
         self._update_size()
 
     # -- public API -------------------------------------------------------
+
+    def lock(self):
+        """Stop following the cursor and record the current geometry + text."""
+        self._follow_timer.stop()
+        self._locked_rect = self.geometry()
+        texts = [s["text"] for s in self._segments if s["text"]]
+        self._locked_text = " ".join(texts)
+
+    def get_locked_rect(self) -> QRect:
+        """Return the screen rect captured by lock()."""
+        if self._locked_rect is not None:
+            return QRect(self._locked_rect)
+        return self.geometry()
+
+    def get_locked_text(self) -> str:
+        """Return the transcript text captured by lock()."""
+        return self._locked_text
 
     def show_error_at_cursor(self, msg: str, duration_ms: int = 4000):
         """Show a transient error message near the cursor in light red.

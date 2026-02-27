@@ -14,7 +14,6 @@ from PyQt6.QtCore import Qt, QSize, QRect, QSettings, QTimer, pyqtSignal, pyqtSl
 from PyQt6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
 from PyQt6.QtWidgets import (
     QApplication,
-    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -26,7 +25,6 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QPlainTextEdit,
     QPushButton,
-    QRadioButton,
     QScrollArea,
     QStyledItemDelegate,
     QStyleOptionViewItem,
@@ -259,20 +257,6 @@ class MainWindow(QMainWindow):
         advanced_layout.setSpacing(12)
         advanced_layout.setContentsMargins(12, 12, 12, 12)
 
-        # Recording mode group
-        rec_mode_group = QGroupBox("Recording Mode")
-        rec_mode_layout = QVBoxLayout(rec_mode_group)
-        self._rec_mode_group = QButtonGroup(self)
-        self.radio_push_to_talk = QRadioButton("Push to talk — hold to record, release to stop")
-        self.radio_tap = QRadioButton("Press once to start, press again to stop")
-        self.radio_push_to_talk.setChecked(True)
-        self._rec_mode_group.addButton(self.radio_push_to_talk, 0)
-        self._rec_mode_group.addButton(self.radio_tap, 1)
-        rec_mode_layout.addWidget(self.radio_push_to_talk)
-        rec_mode_layout.addWidget(self.radio_tap)
-        self._rec_mode_group.idToggled.connect(lambda _id, checked: self._save_settings() if checked else None)
-        advanced_layout.addWidget(rec_mode_group)
-
         # Boost Words group
         boost_group = QGroupBox("Boost Words")
         boost_layout = QVBoxLayout(boost_group)
@@ -461,10 +445,6 @@ class MainWindow(QMainWindow):
         """Return the current boost strength."""
         return self.boost_value_spin.value()
 
-    def get_tap_to_record(self) -> bool:
-        """Return True if tap-to-record mode is enabled."""
-        return self.radio_tap.isChecked()
-
     def get_replacements(self) -> list[tuple[str, str]]:
         """Return the list of (find, replace) word-replacement pairs.
 
@@ -614,7 +594,6 @@ class MainWindow(QMainWindow):
         # restoring one value cannot trigger _save_settings and overwrite the
         # not-yet-restored values (e.g. the radio button fires idToggled which
         # would save an empty replacements table before it is populated).
-        self._rec_mode_group.blockSignals(True)
         self.api_key_input.blockSignals(True)
         self.language_combo.blockSignals(True)
         self.postproc_prompt.blockSignals(True)
@@ -623,7 +602,6 @@ class MainWindow(QMainWindow):
         try:
             self._restore_settings_inner()
         finally:
-            self._rec_mode_group.blockSignals(False)
             self.api_key_input.blockSignals(False)
             self.language_combo.blockSignals(False)
             self.postproc_prompt.blockSignals(False)
@@ -666,12 +644,6 @@ class MainWindow(QMainWindow):
         self._current_combo = combo
         self.hotkey_label.setText(str(combo))
 
-        tap_to_record = self._settings.value("tap_to_record", False)
-        if tap_to_record in (True, "true"):
-            self.radio_tap.setChecked(True)
-        else:
-            self.radio_push_to_talk.setChecked(True)
-
         try:
             pairs = json.loads(self._settings.value("replacements", "[]") or "[]")
         except (ValueError, TypeError):
@@ -689,7 +661,6 @@ class MainWindow(QMainWindow):
         self._settings.setValue("postproc_prompt", self.postproc_prompt.toPlainText())
         self._settings.setValue("boost_words", self.boost_words_input.text())
         self._settings.setValue("boost_value", self.boost_value_spin.value())
-        self._settings.setValue("tap_to_record", self.radio_tap.isChecked())
         print(f"saving replacements: {self.get_replacements()}")
         self._settings.setValue("replacements", json.dumps(self.get_replacements()))
         self._settings.sync()
