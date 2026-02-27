@@ -10,21 +10,22 @@ MessageItem         — a single bubble: dark rounded-rect with QTextEdit
                       The action bar is hidden during "processing" and
                       revealed when the message transitions to "done".
 
-_ActionBar          — small horizontal strip (Insert ↵ · Copy ⧉ · Edit ✎)
-                      that floats over its parent MessageItem.
+_ActionBar          — compact horizontal strip (Insert ↵ · Copy ⧉ · Edit ✎)
+                      positioned above the top-right corner of its
+                      parent MessageItem (not overlapping the bubble).
 
 Layout (bottom-anchored, transparent window)
 --------------------------------------------
 
   ┌────────────────────────────────────────┐
   │  [gradient fade — topmost message]     │
+  │                         [↵][⧉][✎]  ←── action bar above bubble
   │  ┌──────────────────────────────────┐  │
   │  │ Older message 2 (gray text)      │  │
-  │  │                     [↵][⧉][✎]  ←── action bar floats over top-right
   │  └──────────────────────────────────┘  │
+  │                         [↵][⧉][✎]    │
   │  ┌──────────────────────────────────┐  │
   │  │ Latest message (white text)      │  │
-  │  │                     [↵][⧉][✎]  │  │
   │  └──────────────────────────────────┘  │  ← bottom = anchor_pos
   └────────────────────────────────────────┘
 """
@@ -94,12 +95,11 @@ _BTN_ICON_COLOR     = QColor(180, 180, 180, 200)
 _BTN_HOVER_BG       = QColor(255, 255, 255, 28)
 
 _ABAR_BG            = QColor(45, 45, 45, 245)   # action bar background
-_ABAR_PAD           = 5           # inner padding of action bar
-_ABAR_GAP           = 3           # spacing between buttons
-_ABAR_RADIUS        = 8
+_ABAR_PAD           = 0
+_ABAR_GAP           = 2           # spacing between buttons
+_ABAR_RADIUS        = 5
 _ABAR_W             = 3 * _BTN_SIZE + 2 * _ABAR_GAP + 2 * _ABAR_PAD
 _ABAR_H             = _BTN_SIZE + 2 * _ABAR_PAD
-_ABAR_MARGIN        = 6           # distance from bubble corner to action bar
 
 _OVERLAY_MAX_TEXT_W = 420 - 2 * _BUBBLE_PADDING                         # 396 px — match TranscriptOverlay
 _OVERLAY_W          = _OVERLAY_MAX_TEXT_W + 2 * _BUBBLE_PADDING         # 420 px
@@ -324,24 +324,26 @@ class MessageItem(QWidget):
         tw = _OVERLAY_MAX_TEXT_W
         doc.setTextWidth(tw)
         doc_h = int(doc.size().height())
-        new_h = max(doc_h + _BUBBLE_PADDING * 2, 44)
+        bubble_h = max(doc_h + _BUBBLE_PADDING * 2, 44)
+        bar_h = _ABAR_H if self._state == "done" else 0
+        new_h = bubble_h + bar_h
         if new_h != self.height():
             self.setFixedHeight(new_h)
             self.content_resized.emit()
 
     def _place_children(self):
-        w, h = self.width(), self.height()
-        self._text_edit.setGeometry(
-            _BUBBLE_PADDING, _BUBBLE_PADDING,
-            max(0, w - 2 * _BUBBLE_PADDING),
-            max(0, h - 2 * _BUBBLE_PADDING),
-        )
+        w = self.width()
         bar = self._action_bar
-        bar.move(
-            w - bar.width() - _ABAR_MARGIN,
-            _ABAR_MARGIN,
-        )
+        bar_h = _ABAR_H if self._state == "done" else 0
+
+        bar.move(w - bar.width(), 0)
         bar.raise_()
+
+        self._text_edit.setGeometry(
+            _BUBBLE_PADDING, bar_h + _BUBBLE_PADDING,
+            max(0, w - 2 * _BUBBLE_PADDING),
+            max(0, self.height() - bar_h - 2 * _BUBBLE_PADDING),
+        )
 
     # ── event overrides ──────────────────────────────────────────────────────
 
@@ -437,8 +439,10 @@ class MessageItem(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setOpacity(self._opacity)
+        bar_h = _ABAR_H if self._state == "done" else 0
+        bubble_rect = QRectF(0, bar_h, self.width(), self.height() - bar_h)
         path = QPainterPath()
-        path.addRoundedRect(QRectF(self.rect()), _BUBBLE_RADIUS, _BUBBLE_RADIUS)
+        path.addRoundedRect(bubble_rect, _BUBBLE_RADIUS, _BUBBLE_RADIUS)
         p.fillPath(path, _BUBBLE_BG)
         p.end()
 
