@@ -99,7 +99,7 @@ _ABAR_BG            = QColor(45, 45, 45, 245)   # action bar background
 _ABAR_PAD           = 0
 _ABAR_GAP           = 2           # spacing between buttons
 _ABAR_RADIUS        = 5
-_ABAR_W             = 3 * _BTN_SIZE + 2 * _ABAR_GAP + 2 * _ABAR_PAD
+_ABAR_W             = 2 * _BTN_SIZE + _ABAR_GAP + 2 * _ABAR_PAD
 _ABAR_H             = _BTN_SIZE + 2 * _ABAR_PAD
 
 _OVERLAY_MAX_TEXT_W = 420 - 2 * _BUBBLE_PADDING                         # 396 px — match TranscriptOverlay
@@ -169,7 +169,6 @@ class _ActionBar(QWidget):
     NOT part of any layout — positioned via move() in resizeEvent.
     """
 
-    insert_clicked = pyqtSignal()
     copy_clicked   = pyqtSignal()
     edit_clicked   = pyqtSignal()
 
@@ -181,15 +180,12 @@ class _ActionBar(QWidget):
         layout.setContentsMargins(_ABAR_PAD, _ABAR_PAD, _ABAR_PAD, _ABAR_PAD)
         layout.setSpacing(_ABAR_GAP)
 
-        self._btn_insert = _IconButton("↵", "Insert", self)
         self._btn_copy   = _IconButton("⧉", "Copy",   self)
         self._btn_edit   = _IconButton("✎", "Edit",   self)
 
-        self._btn_insert.clicked.connect(self.insert_clicked)
         self._btn_copy.clicked.connect(self.copy_clicked)
         self._btn_edit.clicked.connect(self.edit_clicked)
 
-        layout.addWidget(self._btn_insert)
         layout.addWidget(self._btn_copy)
         layout.addWidget(self._btn_edit)
 
@@ -282,12 +278,12 @@ class MessageItem(QWidget):
         self._text_edit.document().contentsChanged.connect(self._on_text_changed)
         self._text_edit.focusInEvent  = self._text_focus_in
         self._text_edit.focusOutEvent = self._text_focus_out
+        self._text_edit.mousePressEvent = self._text_mouse_press
 
         self._raw_text = text
         self._apply_display()
 
         self._action_bar = _ActionBar(self)
-        self._action_bar.insert_clicked.connect(self._on_insert)
         self._action_bar.copy_clicked.connect(self._on_copy)
         self._action_bar.edit_clicked.connect(self._on_edit)
         self._action_bar.raise_()
@@ -375,6 +371,8 @@ class MessageItem(QWidget):
         self._update_height()
 
     def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and not self._editing and self._state == "done":
+            self._on_insert()
         self.activated.emit()
         super().mousePressEvent(event)
 
@@ -390,6 +388,12 @@ class MessageItem(QWidget):
             if not self.underMouse():
                 self._action_bar.hide()
         QTextEdit.focusOutEvent(self._text_edit, event)
+
+    def _text_mouse_press(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and not self._editing and self._state == "done":
+            self._on_insert()
+        else:
+            QTextEdit.mousePressEvent(self._text_edit, event)
 
     # ── button handlers ──────────────────────────────────────────────────────
 
