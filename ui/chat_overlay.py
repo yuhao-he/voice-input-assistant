@@ -52,6 +52,7 @@ from PyQt6.QtGui import (
     QLinearGradient,
     QPainter,
     QPainterPath,
+    QPen,
 )
 from PyQt6.QtWidgets import (
     QApplication,
@@ -86,7 +87,7 @@ def _reactivate_last_app(app):
 
 _BUBBLE_PADDING     = 12          # inner text padding
 _BUBBLE_RADIUS      = 10
-_BUBBLE_SPACING     = 8           # vertical gap between bubbles
+_BUBBLE_SPACING     = 4           # vertical gap between bubbles
 _BUBBLE_BG          = QColor(25, 25, 25, 220)
 
 _BTN_SIZE           = 26          # icon button square
@@ -103,6 +104,11 @@ _ABAR_H             = _BTN_SIZE + 2 * _ABAR_PAD
 
 _OVERLAY_MAX_TEXT_W = 420 - 2 * _BUBBLE_PADDING                         # 396 px — match TranscriptOverlay
 _OVERLAY_W          = _OVERLAY_MAX_TEXT_W + 2 * _BUBBLE_PADDING         # 420 px
+
+_WRAP_PAD           = 4
+_WRAP_BG            = QColor(50, 50, 50, 255)
+_WRAP_RADIUS        = 10
+_WRAP_BORDER        = QColor(85, 85, 85, 255)
 
 _HISTORY_VISIBLE    = 2.5         # how many prev bubbles to show
 
@@ -236,7 +242,10 @@ class MessageItem(QWidget):
         children_vis = value > 0.05
         self._text_edit.setVisible(children_vis)
         if self._state == "done":
-            self._action_bar.setVisible(children_vis)
+            if children_vis:
+                self._action_bar.setVisible(self.underMouse() or self._editing)
+            else:
+                self._action_bar.setVisible(False)
         self.update()
 
     bubble_opacity = pyqtProperty(float, fget=_get_opacity, fset=_set_opacity)
@@ -247,6 +256,7 @@ class MessageItem(QWidget):
                  state: str = "done",
                  parent: QWidget | None = None):
         super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover)
         self._opacity   = 1.0
         self._is_latest = is_latest
         self._editing   = False
@@ -282,8 +292,7 @@ class MessageItem(QWidget):
         self._action_bar.edit_clicked.connect(self._on_edit)
         self._action_bar.raise_()
 
-        if state == "processing":
-            self._action_bar.hide()
+        self._action_bar.hide()
 
         self.setSizePolicy(QSizePolicy.Policy.Preferred,
                            QSizePolicy.Policy.Minimum)
@@ -325,27 +334,37 @@ class MessageItem(QWidget):
         doc.setTextWidth(tw)
         doc_h = int(doc.size().height())
         bubble_h = max(doc_h + _BUBBLE_PADDING * 2, 44)
-        bar_h = _ABAR_H if self._state == "done" else 0
-        new_h = bubble_h + bar_h
+        new_h = bubble_h
         if new_h != self.height():
             self.setFixedHeight(new_h)
             self.content_resized.emit()
 
     def _place_children(self):
         w = self.width()
+        h = self.height()
         bar = self._action_bar
-        bar_h = _ABAR_H if self._state == "done" else 0
-
-        bar.move(w - bar.width(), 0)
+        
+        # Position slightly inward from the top-right corner to prevent spilling
+        bar.move(w - bar.width() - 4, 4)
         bar.raise_()
 
         self._text_edit.setGeometry(
-            _BUBBLE_PADDING, bar_h + _BUBBLE_PADDING,
-            max(0, w - 2 * _BUBBLE_PADDING),
-            max(0, self.height() - bar_h - 2 * _BUBBLE_PADDING),
+            _BUBBLE_PADDING, _BUBBLE_PADDING,
+            w - 2 * _BUBBLE_PADDING,
+            h - 2 * _BUBBLE_PADDING,
         )
 
     # ── event overrides ──────────────────────────────────────────────────────
+
+    def enterEvent(self, event):
+        if self._state == "done":
+            self._action_bar.show()
+        super().enterEvent(event)
+        
+    def leaveEvent(self, event):
+        if not self._editing:
+            self._action_bar.hide()
+        super().leaveEvent(event)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -368,6 +387,8 @@ class MessageItem(QWidget):
             self._editing = False
             self._apply_text_color()
             self.edit_ended.emit()
+            if not self.underMouse():
+                self._action_bar.hide()
         QTextEdit.focusOutEvent(self._text_edit, event)
 
     # ── button handlers ──────────────────────────────────────────────────────
@@ -429,7 +450,6 @@ class MessageItem(QWidget):
         self._text_edit.setPlainText(final_text)
         self._text_edit.blockSignals(False)
         self._apply_text_color()
-        self._action_bar.show()
         self._place_children()
         self._update_height()
 
@@ -439,42 +459,13 @@ class MessageItem(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setOpacity(self._opacity)
-        bar_h = _ABAR_H if self._state == "done" else 0
-        bubble_rect = QRectF(0, bar_h, self.width(), self.height() - bar_h)
+        
         path = QPainterPath()
-        path.addRoundedRect(bubble_rect, _BUBBLE_RADIUS, _BUBBLE_RADIUS)
+        path.addRoundedRect(QRectF(self.rect()), _BUBBLE_RADIUS, _BUBBLE_RADIUS)
         p.fillPath(path, _BUBBLE_BG)
         p.end()
 
 
-# ── Gradient mask ────────────────────────────────────────────────────────────
-
-class _GradientMask(QWidget):
-    """
-    Painted over the top of the scroll area to fade out the partially-visible
-    topmost message and signal there is more content above.
-    """
-
-    def __init__(self, parent: QWidget | None = None):
-        super().__init__(parent)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
-        self._fade_h = 0
-
-    def set_fade_height(self, h: int):
-        self._fade_h = h
-        self.update()
-
-    def paintEvent(self, event):
-        if self._fade_h <= 0:
-            return
-        p = QPainter(self)
-        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationOut)
-        grad = QLinearGradient(0, 0, 0, self._fade_h)
-        grad.setColorAt(0.0, QColor(0, 0, 0, 255))
-        grad.setColorAt(1.0, QColor(0, 0, 0, 0))
-        p.fillRect(QRect(0, 0, self.width(), self._fade_h), grad)
-        p.end()
 
 
 # ── Main overlay window ──────────────────────────────────────────────────────
@@ -526,7 +517,7 @@ class ChatHistoryOverlay(QWidget):
         self._scroll.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._scroll.setVerticalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         self._scroll.setStyleSheet(
             "* { background: transparent; border: none; }"
@@ -544,19 +535,12 @@ class ChatHistoryOverlay(QWidget):
 
         self._container = QWidget()
         self._container_layout = QVBoxLayout(self._container)
-        self._container_layout.setContentsMargins(0, 0, 0, 0)
+        self._container_layout.setContentsMargins(_WRAP_PAD, _WRAP_PAD, _WRAP_PAD, _WRAP_PAD)
         self._container_layout.setSpacing(_BUBBLE_SPACING)
         self._container_layout.addStretch()   # top stretch pushes bubbles to the bottom
         self._scroll.setWidget(self._container)
 
-        # Gradient mask (mouse-transparent, drawn on top of scroll area)
-        self._gradient = _GradientMask(self)
-        self._gradient.raise_()
-        self._target_fade_h = 0
-
-        self._scroll.verticalScrollBar().valueChanged.connect(self._update_gradient)
-
-        self.setFixedWidth(_OVERLAY_W)
+        self.setFixedWidth(_OVERLAY_W + 2 * _WRAP_PAD)
 
     # ── spinner ──────────────────────────────────────────────────────────────
 
@@ -601,52 +585,40 @@ class ChatHistoryOverlay(QWidget):
 
     def _desired_window_height(self, history_visible: bool = True) -> int:
         if not self._items:
-            return 80
+            return 80 + 2 * _WRAP_PAD
         latest_h = self._items[-1].height()
         if len(self._items) == 1 or not history_visible:
-            return latest_h
-        prev_h = int(_HISTORY_VISIBLE * self._avg_prev_height())
-        return latest_h + prev_h + _BUBBLE_SPACING
+            return latest_h + 2 * _WRAP_PAD
+            
+        actual_prev_h = sum(item.height() for item in self._items[:-1]) + max(0, len(self._items) - 2) * _BUBBLE_SPACING
+        max_prev_h = int(_HISTORY_VISIBLE * self._avg_prev_height())
+        prev_h = min(actual_prev_h, max_prev_h)
+        return latest_h + prev_h + _BUBBLE_SPACING + 2 * _WRAP_PAD
 
     def _reposition(self, history_visible: bool = True):
         h = self._desired_window_height(history_visible)
         screen = QApplication.screenAt(self._anchor)
         if screen is not None:
             geo = screen.availableGeometry()
-            h = min(h, max(80, self._anchor.y() - geo.top()))
+            h = min(h, max(80 + 2 * _WRAP_PAD, self._anchor.y() + _WRAP_PAD - geo.top()))
 
         self.setFixedHeight(h)
-        self._scroll.setGeometry(0, 0, _OVERLAY_W, h)
-        self._gradient.setGeometry(0, 0, _OVERLAY_W, h)
+        # Inset the scroll area by 1px so it doesn't overlap the bright border
+        self._scroll.setGeometry(1, 1, self.width() - 2, h - 2)
 
-        x, y = self._anchor.x(), self._anchor.y() - h
+        x, y = self._anchor.x() - _WRAP_PAD, self._anchor.y() + _WRAP_PAD - h
         if screen is not None:
             geo = screen.availableGeometry()
-            x = max(geo.left(), min(x, geo.right() - _OVERLAY_W))
+            x = max(geo.left(), min(x, geo.right() - self.width()))
             y = max(geo.top(), y)
 
         self.move(x, y)
-
-        done_count = sum(1 for it in self._items if it._state == "done")
-        if done_count >= 3 and history_visible:
-            self._target_fade_h = self._avg_prev_height() // 2
-        else:
-            self._target_fade_h = 0
 
         QTimer.singleShot(0, self._scroll_to_bottom)
 
     def _scroll_to_bottom(self):
         sb = self._scroll.verticalScrollBar()
         sb.setValue(sb.maximum())
-
-    def _update_gradient(self):
-        """Show the fade gradient only when content is scrolled above the viewport."""
-        sb = self._scroll.verticalScrollBar()
-        if self._target_fade_h <= 0 or sb.value() <= 0:
-            self._gradient.set_fade_height(0)
-            return
-        progress = min(1.0, sb.value() / self._target_fade_h)
-        self._gradient.set_fade_height(int(self._target_fade_h * progress))
 
     # ── fade-in animation ────────────────────────────────────────────────────
 
@@ -828,4 +800,14 @@ class ChatHistoryOverlay(QWidget):
         p = QPainter(self)
         p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
         p.fillRect(self.rect(), Qt.GlobalColor.transparent)
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        has_processing = any(it._state == "processing" for it in self._items)
+        if not has_processing and self._items:
+            inner_rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+            path = QPainterPath()
+            path.addRoundedRect(inner_rect, _WRAP_RADIUS, _WRAP_RADIUS)
+            p.fillPath(path, _WRAP_BG)
+            p.setPen(QPen(_WRAP_BORDER, 1))
+            p.drawPath(path)
         p.end()
