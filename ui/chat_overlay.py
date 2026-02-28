@@ -743,6 +743,28 @@ class ChatHistoryOverlay(QWidget):
         item.bubble_opacity = 1.0
         item.setVisible(True)
 
+    def show_history_menu(self):
+        """Force the chat wrapper to display containing the local history items visually."""
+        if not self._items:
+            return
+            
+        for existing in self._items:
+            existing.bubble_opacity = 1.0
+            existing.setVisible(True)
+            
+        self._reposition(history_visible=True)
+        
+        if not self.isVisible():
+            prev_app = None
+            if _ns_workspace is not None:
+                try:
+                    prev_app = _ns_workspace().frontmostApplication()
+                except Exception:
+                    pass
+            self.show()
+            self.raise_()
+            _reactivate_last_app(prev_app)
+
     def hide_keep_state(self):
         """Hide the window but keep all messages in memory."""
         for anim in self._animations:

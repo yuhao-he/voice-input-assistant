@@ -48,6 +48,7 @@ from ui.chat_overlay import ChatHistoryOverlay
 from ui.window import MainWindow
 
 _TAP_THRESHOLD = 0.4  # seconds — hold shorter = tap mode
+_DOUBLE_TAP_THRESHOLD = 0.5  # seconds — two presses within this = history menu
 
 
 class AppController(QObject):
@@ -190,7 +191,22 @@ class AppController(QObject):
     @pyqtSlot()
     def on_start_recording(self):
         if self._is_recording:
-            # Second press while recording → stop (tap mode)
+            # Second press while recording
+            elapsed = time.monotonic() - self._press_time
+            if elapsed < _DOUBLE_TAP_THRESHOLD:
+                # Double-tap detected: cancel recording and open history
+                self._bump_generation()
+                self._is_recording = False
+                self.recorder.stop()
+                self._transcript_overlay.dismiss()
+                self._cancel_pending_timers()
+                self.window.set_status_idle()
+                
+                # Show the history menu instead
+                self._chat_overlay.show_history_menu()
+                return
+
+            # Normal tap mode stop
             self._do_stop_recording()
             return
 
