@@ -57,8 +57,8 @@ class AppController(QObject):
     blocking the UI.
     """
 
-    transcription_done = pyqtSignal(str, int, int)   # (text, msg_id, generation)
-    transcription_failed = pyqtSignal(str, int, int) # (msg, msg_id, generation)
+    transcription_done = pyqtSignal(str, int, int, bool)   # (text, msg_id, generation, is_tap_mode)
+    transcription_failed = pyqtSignal(str, int, int, bool) # (msg, msg_id, generation, is_tap_mode)
     interim_transcript = pyqtSignal(str)             # emitted with live transcript text
 
     def __init__(self, window: MainWindow):
@@ -257,20 +257,24 @@ class AppController(QObject):
 
         play_stop()
 
-        # Lock the overlay and capture its geometry + text
-        self._transcript_overlay.lock()
-        locked_rect = self._transcript_overlay.get_locked_rect()
-        locked_text = self._transcript_overlay.get_locked_text()
+        is_tap = self._is_tap_mode
+        if is_tap:
+            # Lock the overlay and capture its geometry + text
+            self._transcript_overlay.lock()
+            locked_rect = self._transcript_overlay.get_locked_rect()
+            locked_text = self._transcript_overlay.get_locked_text()
 
-        # Transfer into ChatHistoryOverlay as a processing bubble
-        msg_id = self._chat_overlay.add_processing_message(
-            locked_text,
-            locked_rect,
-            on_insert=self._do_insert,
-        )
+            # Transfer into ChatHistoryOverlay as a processing bubble
+            msg_id = self._chat_overlay.add_processing_message(
+                locked_text,
+                locked_rect,
+                on_insert=self._do_insert,
+            )
 
-        # Hide the transcript overlay — the chat overlay now owns the visual
-        self._transcript_overlay.dismiss()
+            # Hide the transcript overlay — the chat overlay now owns the visual
+            self._transcript_overlay.dismiss()
+        else:
+            msg_id = self._transcript_overlay.freeze_active_segment()
 
         job = self._active_job
         thread_ref = job["thread"] if job else None
@@ -283,7 +287,7 @@ class AppController(QObject):
         generation = self._current_generation()
         threading.Thread(
             target=self._wait_for_streaming,
-            args=(thread_ref, result_box, prompt, replacements, msg_id, generation),
+            args=(thread_ref, result_box, prompt, replacements, msg_id, generation, is_tap),
             daemon=True,
         ).start()
 
@@ -321,6 +325,7 @@ class AppController(QObject):
         replacements: list[tuple[str, str]],
         msg_id: int,
         generation: int,
+        is_tap_mode: bool,
     ):
         if thread is not None:
             thread.join()
@@ -331,7 +336,7 @@ class AppController(QObject):
         text = result_box[0]
 
         if not text:
-            self.transcription_failed.emit("No transcription returned.", msg_id, generation)
+            self.transcription_failed.emit("No transcription returned.", msg_id, generation, is_tap_mode)
             return
 
         if prompt:
@@ -350,7 +355,7 @@ class AppController(QObject):
                 flags=re.IGNORECASE,
             )
 
-        self.transcription_done.emit(text, msg_id, generation)
+        self.transcription_done.emit(text, msg_id, generation, is_tap_mode)
 
     # ------------------------------------------------------------------
     # Clipboard-swap auto-paste (used by chat overlay Insert button)
@@ -403,25 +408,33 @@ class AppController(QObject):
     # Transcription result handlers
     # ------------------------------------------------------------------
 
-    @pyqtSlot(str, int, int)
-    def _on_transcription_done(self, text: str, msg_id: int, generation: int):
+    @pyqtSlot(str, int, int, bool)
+    def _on_transcription_done(self, text: str, msg_id: int, generation: int, is_tap_mode: bool):
         if generation != self._current_generation():
             return
 
         print(f"\n>>> {text}\n")
 
-        self._chat_overlay.complete_processing(msg_id, text)
+        if is_tap_mode:
+            self._chat_overlay.complete_processing(msg_id, text)
+        else:
+            self._transcript_overlay.complete_segment(msg_id)
+            self._chat_overlay.add_done_message_silently(text, on_insert=self._do_insert)
+            self._do_insert(text)
 
         if not self._is_recording:
             self.window.set_status_idle()
 
-    @pyqtSlot(str, int, int)
-    def _on_transcription_failed(self, msg: str, msg_id: int, generation: int):
+    @pyqtSlot(str, int, int, bool)
+    def _on_transcription_failed(self, msg: str, msg_id: int, generation: int, is_tap_mode: bool):
         if generation != self._current_generation():
             return
 
         print(f"[Info] {msg}")
-        self._chat_overlay.remove_message(msg_id)
+        if is_tap_mode:
+            self._chat_overlay.remove_message(msg_id)
+        else:
+            self._transcript_overlay.complete_segment(msg_id)
 
         if not self._is_recording:
             self.window.set_status_idle()

@@ -718,6 +718,30 @@ class ChatHistoryOverlay(QWidget):
 
             self._reposition(history_visible=True)
 
+    def add_done_message_silently(self, final_text: str, on_insert: Callable[[str], None] | None = None):
+        """Silently append a completed message to the history without popping up the overlay."""
+        if on_insert is not None:
+            self._on_insert_cb = on_insert
+            
+        msg_id = self._next_msg_id
+        self._next_msg_id += 1
+
+        for existing in self._items:
+            existing.set_is_latest(False)
+
+        item = MessageItem(final_text, is_latest=True, state="done")
+        item._msg_id = msg_id
+        item.activated.connect(self._on_item_activated)
+        item.content_resized.connect(self._on_item_resized)
+        item.insert_requested.connect(self._handle_insert)
+        item.dismiss_requested.connect(self.dismiss)
+        
+        self._items.append(item)
+        self._container_layout.addWidget(item)
+        
+        item.bubble_opacity = 1.0
+        item.setVisible(True)
+
     def hide_keep_state(self):
         """Hide the window but keep all messages in memory."""
         for anim in self._animations:
