@@ -198,12 +198,16 @@ class AppController(QObject):
                 self._bump_generation()
                 self._is_recording = False
                 self.recorder.stop()
+                
+                self._transcript_overlay.lock()
+                locked_rect = self._transcript_overlay.get_locked_rect()
                 self._transcript_overlay.dismiss()
+                
                 self._cancel_pending_timers()
                 self.window.set_status_idle()
                 
-                # Show the history menu instead
-                self._chat_overlay.show_history_menu()
+                # Show the history menu instead at the typing cursor position
+                self._chat_overlay.show_history_menu(locked_rect)
                 return
 
             # Normal tap mode stop

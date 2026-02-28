@@ -191,9 +191,6 @@ class _ActionBar(QWidget):
 
         self.setFixedSize(_ABAR_W, _ABAR_H)
 
-    def set_edit_active(self, active: bool):
-        self._btn_edit.setToolTip("Done" if active else "Edit")
-
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -353,7 +350,7 @@ class MessageItem(QWidget):
     # ── event overrides ──────────────────────────────────────────────────────
 
     def enterEvent(self, event):
-        if self._state == "done":
+        if self._state == "done" and not self._editing:
             self._action_bar.show()
         super().enterEvent(event)
         
@@ -381,11 +378,14 @@ class MessageItem(QWidget):
         QTextEdit.focusInEvent(self._text_edit, event)
 
     def _text_focus_out(self, event):
-        if self._editing and self._text_edit.isReadOnly():
+        if self._editing:
+            self._text_edit.setReadOnly(True)
             self._editing = False
             self._apply_text_color()
             self.edit_ended.emit()
-            if not self.underMouse():
+            if self.underMouse() and self._state == "done":
+                self._action_bar.show()
+            else:
                 self._action_bar.hide()
         QTextEdit.focusOutEvent(self._text_edit, event)
 
@@ -409,22 +409,15 @@ class MessageItem(QWidget):
 
     def _on_edit(self):
         self.activated.emit()
-        if self._text_edit.isReadOnly():
-            self._text_edit.setReadOnly(False)
-            self._editing = True
-            self._apply_text_color()
-            self._text_edit.setFocus()
-            cursor = self._text_edit.textCursor()
-            cursor.movePosition(cursor.MoveOperation.End)
-            self._text_edit.setTextCursor(cursor)
-            self._action_bar.set_edit_active(True)
-            self.edit_started.emit()
-        else:
-            self._text_edit.setReadOnly(True)
-            self._editing = False
-            self._apply_text_color()
-            self._action_bar.set_edit_active(False)
-            self.edit_ended.emit()
+        self._text_edit.setReadOnly(False)
+        self._editing = True
+        self._apply_text_color()
+        self._text_edit.setFocus()
+        cursor = self._text_edit.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        self._text_edit.setTextCursor(cursor)
+        self._action_bar.hide()
+        self.edit_started.emit()
 
     # ── public API ───────────────────────────────────────────────────────────
 
@@ -747,10 +740,12 @@ class ChatHistoryOverlay(QWidget):
         item.bubble_opacity = 1.0
         item.setVisible(True)
 
-    def show_history_menu(self):
-        """Force the chat wrapper to display containing the local history items visually."""
+    def show_history_menu(self, anchor_rect: QRect):
+        """Force the chat wrapper to display containing the local history items visually, anchoring at the given rect."""
         if not self._items:
             return
+            
+        self._anchor = QPoint(anchor_rect.x(), anchor_rect.y() + anchor_rect.height())
             
         for existing in self._items:
             existing.bubble_opacity = 1.0
