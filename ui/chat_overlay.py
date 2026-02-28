@@ -396,6 +396,7 @@ class MessageItem(QWidget):
     def _on_insert(self):
         self.activated.emit()
         self.insert_requested.emit(self._text_edit.toPlainText())
+        self.dismiss_requested.emit()
 
     def _on_copy(self):
         self.activated.emit()
