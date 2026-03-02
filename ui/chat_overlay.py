@@ -398,7 +398,7 @@ class MessageItem(QWidget):
 
     def _text_key_press(self, event):
         if event.key() == Qt.Key.Key_Return and (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
-            self._text_edit.clearFocus()
+            self._text_focus_out(None)
             return
         QTextEdit.keyPressEvent(self._text_edit, event)
 
