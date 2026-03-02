@@ -46,6 +46,7 @@ from services.postprocess import postprocess
 from ui.overlay import TranscriptOverlay
 from ui.chat_overlay import ChatHistoryOverlay
 from ui.window import MainWindow
+from os_integration import get_os_integration
 
 _TAP_THRESHOLD = 0.4  # seconds — hold shorter = tap mode
 _DOUBLE_TAP_THRESHOLD = 0.5  # seconds — two presses within this = history menu
@@ -64,6 +65,9 @@ class AppController(QObject):
 
     def __init__(self, window: MainWindow):
         super().__init__()
+        # Initialize OS API very early so background timers don't crash
+        self._os_api = get_os_integration()
+        
         self.window = window
         self.recorder = AudioRecorder()
 
@@ -123,14 +127,19 @@ class AppController(QObject):
         self.interim_transcript.emit(text)
 
     def _capture_frontmost_external_app(self):
-        if _ns_workspace is None:
-            return
-        try:
-            app = _ns_workspace().frontmostApplication()
-            if app is not None and app.processIdentifier() != os.getpid():
-                self._last_external_app = app
-        except Exception:
-            pass
+        app = self._os_api.get_frontmost_app()
+        if app is not None:
+            # We don't have processIdentifier cross-platform easily without psutil, 
+            # but usually AppKit's app works. We can assume the OS integration returns
+            # valid external apps or we just always restore it.
+            # In macOS, NSApplication has processIdentifier.
+            try:
+                if hasattr(app, "processIdentifier") and app.processIdentifier() != os.getpid():
+                    self._last_external_app = app
+                elif not hasattr(app, "processIdentifier"):
+                    self._last_external_app = app
+            except Exception:
+                pass
 
     def _release_focus_to_input_app(self) -> bool:
         focused = QApplication.focusWidget()
@@ -138,21 +147,8 @@ class AppController(QObject):
             focused.clearFocus()
         self.window.clearFocus()
 
-        if _ns_workspace is None:
-            return False
-        try:
-            front = _ns_workspace().frontmostApplication()
-            if front is not None and front.processIdentifier() != os.getpid():
-                return True
-            if (
-                front is not None
-                and front.processIdentifier() == os.getpid()
-                and self._last_external_app is not None
-            ):
-                self._last_external_app.activateWithOptions_(0)
-                return True
-        except Exception:
-            return False
+        if self._last_external_app is not None:
+            return self._os_api.activate_app(self._last_external_app)
         return False
 
     def _current_generation(self) -> int:
@@ -401,19 +397,13 @@ class AppController(QObject):
         def _do_paste():
             if generation != self._current_generation():
                 return
-
-            paste_mod_str = "cmd" if _IS_MACOS else "ctrl"
-            active_mods = self.window._hotkey_listener._active_modifiers
-            needs_modifier = paste_mod_str not in active_mods
-
-            if needs_modifier:
-                self._kb.press(_PASTE_MODIFIER)
-
-            self._kb.press("v")
-            self._kb.release("v")
-
-            if needs_modifier:
-                self._kb.release(_PASTE_MODIFIER)
+            
+            # The focus release should happen right before paste, as simulated in our tests
+            self._release_focus_to_input_app()
+            
+            # Use the OS Integration to trigger the paste keystroke
+            # It already handles the correct modifier (Cmd/Ctrl)
+            self._os_api.simulate_paste()
 
         self._schedule_timer(80, _do_paste)
 
