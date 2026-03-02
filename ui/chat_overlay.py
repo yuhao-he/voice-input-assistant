@@ -48,6 +48,7 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import (
     QColor,
+    QCursor,
     QFont,
     QLinearGradient,
     QPainter,
@@ -264,6 +265,8 @@ class MessageItem(QWidget):
         self._text_edit = QTextEdit(self)
         self._text_edit.setReadOnly(True)
         self._text_edit.setFrameShape(QTextEdit.Shape.NoFrame)
+        self._text_edit.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._text_edit.viewport().setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self._text_edit.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._text_edit.setVerticalScrollBarPolicy(
@@ -275,7 +278,6 @@ class MessageItem(QWidget):
         self._text_edit.document().contentsChanged.connect(self._on_text_changed)
         self._text_edit.focusInEvent  = self._text_focus_in
         self._text_edit.focusOutEvent = self._text_focus_out
-        self._text_edit.mousePressEvent = self._text_mouse_press
 
         self._raw_text = text
         self._apply_display()
@@ -349,15 +351,11 @@ class MessageItem(QWidget):
 
     # ── event overrides ──────────────────────────────────────────────────────
 
-    def enterEvent(self, event):
+    def set_hover_state(self, hovered: bool):
+        """Called by the parent overlay's polling timer."""
         if self._state == "done" and not self._editing:
-            self._action_bar.show()
-        super().enterEvent(event)
-        
-    def leaveEvent(self, event):
-        if not self._editing:
-            self._action_bar.hide()
-        super().leaveEvent(event)
+            if self._action_bar.isVisible() != hovered:
+                self._action_bar.setVisible(hovered)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -380,20 +378,14 @@ class MessageItem(QWidget):
     def _text_focus_out(self, event):
         if self._editing:
             self._text_edit.setReadOnly(True)
+            self._text_edit.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            self._text_edit.viewport().setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
             self._editing = False
             self._apply_text_color()
             self.edit_ended.emit()
-            if self.underMouse() and self._state == "done":
-                self._action_bar.show()
-            else:
-                self._action_bar.hide()
+            # Hover state will be restored by the polling timer next tick
+            self._action_bar.hide()
         QTextEdit.focusOutEvent(self._text_edit, event)
-
-    def _text_mouse_press(self, event):
-        if event.button() == Qt.MouseButton.LeftButton and not self._editing and self._state == "done":
-            self._on_insert()
-        else:
-            QTextEdit.mousePressEvent(self._text_edit, event)
 
     # ── button handlers ──────────────────────────────────────────────────────
 
@@ -410,6 +402,8 @@ class MessageItem(QWidget):
     def _on_edit(self):
         self.activated.emit()
         self._text_edit.setReadOnly(False)
+        self._text_edit.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        self._text_edit.viewport().setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         self._editing = True
         self._apply_text_color()
         self._text_edit.setFocus()
@@ -491,6 +485,7 @@ class ChatHistoryOverlay(QWidget):
             | Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.Tool
             | Qt.WindowType.NoDropShadowWindowHint
+            | Qt.WindowType.WindowDoesNotAcceptFocus
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
@@ -508,6 +503,11 @@ class ChatHistoryOverlay(QWidget):
         self._spin_timer = QTimer(self)
         self._spin_timer.setInterval(80)
         self._spin_timer.timeout.connect(self._tick_spin)
+
+        # Polled hover timer
+        self._hover_timer = QTimer(self)
+        self._hover_timer.timeout.connect(self._poll_hover)
+        self._hover_timer.start(50)
 
         # Scroll area
         self._scroll = QScrollArea(self)
@@ -547,6 +547,15 @@ class ChatHistoryOverlay(QWidget):
         for item in self._items:
             item.tick_spinner(self._spin_frame)
 
+    def _poll_hover(self):
+        if not self.isVisible():
+            return
+        cursor_pos = QCursor.pos()
+        for item in self._items:
+            local_pos = item.mapFromGlobal(cursor_pos)
+            is_hovered = item.rect().contains(local_pos)
+            item.set_hover_state(is_hovered)
+
     def _ensure_spinner(self):
         has_processing = any(it._state == "processing" for it in self._items)
         if has_processing and not self._spin_timer.isActive():
@@ -565,6 +574,16 @@ class ChatHistoryOverlay(QWidget):
                 item._editing = False
                 item._action_bar.set_edit_active(False)
             item.set_is_latest(item is sender)
+
+    def _on_edit_started(self):
+        """Temporarily allow the overlay to accept focus so the user can type in the text edit."""
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowDoesNotAcceptFocus)
+        self.show()
+
+    def _on_edit_ended(self):
+        """Restore the window flag to ignore focus so we don't steal it from other apps."""
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowDoesNotAcceptFocus)
+        self.show()
 
     def _on_item_resized(self):
         """Grow/shrink the overlay and scroll so the edited item stays visible."""
@@ -664,7 +683,9 @@ class ChatHistoryOverlay(QWidget):
         item.activated.connect(self._on_item_activated)
         item.content_resized.connect(self._on_item_resized)
         item.insert_requested.connect(self._handle_insert)
-        item.dismiss_requested.connect(self.dismiss)
+        item.dismiss_requested.connect(self.hide_keep_state)
+        item.edit_started.connect(self._on_edit_started)
+        item.edit_ended.connect(self._on_edit_ended)
         self._items.append(item)
 
         self._container_layout.addWidget(item)
@@ -732,7 +753,9 @@ class ChatHistoryOverlay(QWidget):
         item.activated.connect(self._on_item_activated)
         item.content_resized.connect(self._on_item_resized)
         item.insert_requested.connect(self._handle_insert)
-        item.dismiss_requested.connect(self.dismiss)
+        item.dismiss_requested.connect(self.hide_keep_state)
+        item.edit_started.connect(self._on_edit_started)
+        item.edit_ended.connect(self._on_edit_ended)
         
         self._items.append(item)
         self._container_layout.addWidget(item)
@@ -761,6 +784,8 @@ class ChatHistoryOverlay(QWidget):
                 except Exception:
                     pass
             self.show()
+            # Calling raise_() on macOS with WindowDoesNotAcceptFocus can still trigger activation warnings,
+            # but it is needed to bring the overlay above other windows. We will try just showInactive.
             self.raise_()
             _reactivate_last_app(prev_app)
 
