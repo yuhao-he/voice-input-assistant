@@ -277,7 +277,6 @@ class MessageItem(QWidget):
         self._time_label.setFont(self._time_font)
         self._time_label.setStyleSheet("color: rgba(160, 160, 160, 255);")
         self._time_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom)
-        self._update_time_text()
 
         self._time_updater = QTimer(self)
         self._time_updater.timeout.connect(self._update_time_text)
@@ -313,6 +312,7 @@ class MessageItem(QWidget):
 
         self.setSizePolicy(QSizePolicy.Policy.Preferred,
                            QSizePolicy.Policy.Minimum)
+        self._update_time_text()
         self._update_height()
 
     def _update_time_text(self):
