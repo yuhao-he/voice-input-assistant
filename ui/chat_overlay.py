@@ -396,11 +396,10 @@ class MessageItem(QWidget):
             self.height() - self._time_label.height() - _BUBBLE_PADDING
         )
 
-        # The action bar floats above the top-right
-        self._action_bar.move(
-            self.width() - _ABAR_W,
-            -(_ABAR_H + 4)
-        )
+        # Position slightly inward from the top-right corner to prevent spilling
+        bar = self._action_bar
+        bar.move(self.width() - bar.width() - 4, 4)
+        bar.raise_()
 
     # ── event overrides ──────────────────────────────────────────────────────
 
