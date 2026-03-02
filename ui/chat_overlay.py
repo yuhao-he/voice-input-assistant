@@ -611,9 +611,12 @@ class ChatHistoryOverlay(QWidget):
         self.show()
 
     def _on_edit_ended(self):
-        """Restore the window flag to ignore focus so we don't steal it from other apps."""
-        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowDoesNotAcceptFocus)
-        self.show()
+        """Called when an edit finishes (e.g. by Ctrl+Enter). We intentionally DO NOT
+        restore the WindowDoesNotAcceptFocus flag here because on Linux (X11), setting
+        window flags destroys and recreates the window, which steals focus and instantly
+        fires an ActivationChange event that dismisses the entire history overlay.
+        The overlay will naturally dismiss when the user clicks away anyway."""
+        pass
 
     def _on_item_resized(self):
         """Grow/shrink the overlay and scroll so the edited item stays visible."""
