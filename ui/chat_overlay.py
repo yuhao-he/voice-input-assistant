@@ -281,6 +281,7 @@ class MessageItem(QWidget):
         self._text_edit.document().contentsChanged.connect(self._on_text_changed)
         self._text_edit.focusInEvent  = self._text_focus_in
         self._text_edit.focusOutEvent = self._text_focus_out
+        self._text_edit.keyPressEvent = self._text_key_press
 
         self._raw_text = text
         self._apply_display()
@@ -394,6 +395,12 @@ class MessageItem(QWidget):
             
         if event is not None:
             QTextEdit.focusOutEvent(self._text_edit, event)
+
+    def _text_key_press(self, event):
+        if event.key() == Qt.Key.Key_Return and (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+            self._text_edit.clearFocus()
+            return
+        QTextEdit.keyPressEvent(self._text_edit, event)
 
     # ── button handlers ──────────────────────────────────────────────────────
 
