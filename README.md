@@ -12,7 +12,7 @@
 
 **VIA (Voice Input Assistant)** is a real-time transcription desktop application designed to bridge the gap between your voice and your computer. It provides high-accuracy, real-time speech transcription and acts as your intelligent typing assistant across any application you use.
 
-Supports macOS and Linux (X11 only; Wayland is not supported).
+Supports macOS, Windows, and Linux (X11 only; Wayland is not supported).
 
 ## Features & Capabilities
 
@@ -40,6 +40,7 @@ Supports macOS and Linux (X11 only; Wayland is not supported).
 
 ## Installation
 
+Installing on Mac and Linux:
 ```bash
 # Clone the repository
 git clone https://github.com/yuhao-he/voice-input-assistant.git
@@ -47,16 +48,29 @@ cd voice-input-assistant
 
 # Create a virtual environment
 python3 -m venv venv
-source venv/bin/activate   # macOS / Linux
+source venv/bin/activate
 
 # Install dependencies
 pip install -r requirements.txt
 ```
 
+Installing on Windows:
+```bash
+# Clone the repo
+git clone https://github.com/yuhao-he/voice-input-assistant.git
+cd voice_input
+
+python -m venv venv
+venv\Scripts\activate
+
+pip install -r requirements.txt
+pip install "PyQt6==6.6.1" "PyQt6-Qt6==6.6.2"
+```
+
 ## Usage
 
 ```bash
-source venv/bin/activate
+source venv/bin/activate # Windows: venv\Scripts\activate
 python main.py
 ```
 
