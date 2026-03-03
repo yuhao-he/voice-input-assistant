@@ -139,7 +139,13 @@ class HotkeyListener:
 
         key_str = key_to_str(key)
 
-        if key_str == "q" and self._active_modifiers == {"ctrl", "shift", "alt"}:
+        is_settings_combo = (
+            self._active_modifiers == {"ctrl", "shift", "alt"}
+            and (
+                key_str == "q" or (isinstance(key, KeyCode) and getattr(key, 'vk', None) == 81)
+            )
+        )
+        if is_settings_combo:
             self.signals.toggle_settings_requested.emit()
             return
 
