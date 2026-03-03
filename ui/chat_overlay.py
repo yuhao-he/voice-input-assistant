@@ -68,6 +68,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from .animations import get_conveyor_spinner_frames
+
 _IS_MACOS = platform.system() == "Darwin"
 
 _ns_workspace = None
@@ -340,14 +342,21 @@ class MessageItem(QWidget):
 
     def _apply_display(self):
         """Update text content and color based on state."""
+        import html
         if self._state == "processing":
-            spinner = _SPIN_CHARS[self._spin_frame]
-            display = self._raw_text if self._raw_text else "…"
-            self._text_edit.setPlainText(f"{display} {spinner}")
+            from PyQt6.QtGui import QFontMetrics
+            fm = QFontMetrics(self._font)
+            frames = get_conveyor_spinner_frames(fm.height())
+            spinner = frames[self._spin_frame % len(frames)]
+            escaped = html.escape(self._raw_text) if self._raw_text else "…"
+            self._text_edit.setHtml(
+                f"<div style='white-space: pre-wrap;'>{escaped}&nbsp;{spinner}</div>"
+            )
             color = "rgba(255,255,255,130)"
         else:
             self._text_edit.setPlainText(self._raw_text)
             color = self._resolve_color()
+
         self._text_edit.setStyleSheet(
             f"background: transparent; border: none; color: {color};"
         )
@@ -507,21 +516,17 @@ class MessageItem(QWidget):
         if self._state != "processing":
             return
         self._spin_frame = frame
-        spinner = _SPIN_CHARS[frame]
-        display = self._raw_text if self._raw_text else "…"
         self._text_edit.blockSignals(True)
-        self._text_edit.setPlainText(f"{display} {spinner}")
+        self._apply_display()
         self._text_edit.blockSignals(False)
-        self.update()
 
     def complete(self, final_text: str):
         """Transition from processing to done."""
         self._state = "done"
         self._raw_text = final_text
         self._text_edit.blockSignals(True)
-        self._text_edit.setPlainText(final_text)
+        self._apply_display()
         self._text_edit.blockSignals(False)
-        self._apply_text_color()
         self._place_children()
         self._update_height()
 
@@ -581,7 +586,7 @@ class ChatHistoryOverlay(QWidget):
         # Spinner shared across all processing items
         self._spin_frame: int = 0
         self._spin_timer = QTimer(self)
-        self._spin_timer.setInterval(80)
+        self._spin_timer.setInterval(16)
         self._spin_timer.timeout.connect(self._tick_spin)
 
         # Polled hover timer
@@ -623,7 +628,7 @@ class ChatHistoryOverlay(QWidget):
     # ── spinner ──────────────────────────────────────────────────────────────
 
     def _tick_spin(self):
-        self._spin_frame = (self._spin_frame + 1) % len(_SPIN_CHARS)
+        self._spin_frame = (self._spin_frame + 1) % 31
         for item in self._items:
             item.tick_spinner(self._spin_frame)
 

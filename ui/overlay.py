@@ -18,6 +18,8 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import QWidget, QApplication
 
+from .animations import get_conveyor_spinner_frames
+
 _IS_MACOS = platform.system() == "Darwin"
 
 # On macOS, use Cocoa to snapshot and re-activate the previously focused
@@ -52,9 +54,6 @@ _OVERLAY_PADDING = 12
 _OVERLAY_MAX_WIDTH = 420
 _OVERLAY_CORNER_RADIUS = 10
 _OVERLAY_OFFSET = QPoint(24, 24)   # offset from cursor
-
-# Braille spinner frames cycled by the spin timer
-_SPIN_CHARS = ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷']
 
 
 class TranscriptOverlay(QWidget):
@@ -105,7 +104,7 @@ class TranscriptOverlay(QWidget):
         # Shared spinner animation state
         self._spin_frame: int = 0
         self._spin_timer = QTimer(self)
-        self._spin_timer.setInterval(80)
+        self._spin_timer.setInterval(16) # ~60fps for 500ms total duration (31 frames)
         self._spin_timer.timeout.connect(self._tick_spin)
 
         font_name = "SF Pro Text" if _IS_MACOS else "Segoe UI"
@@ -238,7 +237,7 @@ class TranscriptOverlay(QWidget):
         self._update_size()
 
     def _tick_spin(self):
-        self._spin_frame = (self._spin_frame + 1) % len(_SPIN_CHARS)
+        self._spin_frame = (self._spin_frame + 1) % 31
         self.update()
 
     def _follow_cursor(self):
@@ -265,7 +264,8 @@ class TranscriptOverlay(QWidget):
         - Processing segments: semi-white text + spinner char.
         - Active segment: bright white text (or placeholder if empty).
         """
-        spinner = _SPIN_CHARS[self._spin_frame]
+        frames = get_conveyor_spinner_frames(self._metrics.height())
+        spinner = frames[self._spin_frame % len(frames)]
         parts: list[str] = []
 
         for seg in self._segments:
@@ -278,7 +278,7 @@ class TranscriptOverlay(QWidget):
                     f'</span>'
                 )
             elif seg["state"] == "processing":
-                # Semi-white + spinner appended inline
+                # Semi-white + inline HTML spinner
                 text_part = escaped if escaped else "…"
                 parts.append(
                     f'<span style="color:rgba(255,255,255,130);">'
