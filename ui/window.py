@@ -126,14 +126,15 @@ class _TwoLineDelegate(QStyledItemDelegate):
 
 # Default hotkey: F3
 DEFAULT_HOTKEY = HotkeyCombo(modifiers=set(), main_key="f3")
+DEFAULT_AUTO_INSERT_HOTKEY = HotkeyCombo(modifiers=set(), main_key=None)
 
 
 class MainWindow(QMainWindow):
     """Application main window."""
 
     # Signals emitted to the controller
-    recording_requested = pyqtSignal()    # hotkey pressed
-    recording_stopped = pyqtSignal()      # hotkey released
+    recording_requested = pyqtSignal(bool)    # hotkey pressed (is_secondary)
+    recording_stopped = pyqtSignal(bool)      # hotkey released (is_secondary)
     cancel_requested = pyqtSignal()       # escape pressed
 
     def __init__(self):
@@ -144,7 +145,9 @@ class MainWindow(QMainWindow):
         # Hotkey listener
         self._hotkey_listener = HotkeyListener()
         self._current_combo: HotkeyCombo | None = None
+        self._auto_insert_combo: HotkeyCombo | None = None
         self._capturing_hotkey = False
+        self._capturing_auto_insert = False
         self._capture_modifiers: set[str] = set()
 
         # Central widget with tab container
@@ -238,14 +241,31 @@ class MainWindow(QMainWindow):
         settings_layout.addWidget(lang_group)
 
         # Hotkey group
-        hotkey_group = QGroupBox("Hotkey (Push-to-Talk)")
-        hotkey_layout = QHBoxLayout(hotkey_group)
+        hotkey_group = QGroupBox("Hotkeys")
+        hotkey_layout = QVBoxLayout(hotkey_group)
+
+        # Primary
+        primary_ly = QHBoxLayout()
+        primary_ly.addWidget(QLabel("Menu (Push-to-Talk):"))
         self.hotkey_label = QLabel(str(DEFAULT_HOTKEY))
         self.hotkey_label.setStyleSheet("font-weight: bold; font-size: 14px;")
-        hotkey_layout.addWidget(self.hotkey_label)
-        self.hotkey_btn = QPushButton("Set Hotkey")
-        self.hotkey_btn.clicked.connect(self._start_hotkey_capture)
-        hotkey_layout.addWidget(self.hotkey_btn)
+        primary_ly.addWidget(self.hotkey_label)
+        self.hotkey_btn = QPushButton("Set")
+        self.hotkey_btn.clicked.connect(self._start_capture_primary)
+        primary_ly.addWidget(self.hotkey_btn)
+        hotkey_layout.addLayout(primary_ly)
+
+        # Secondary
+        secondary_ly = QHBoxLayout()
+        secondary_ly.addWidget(QLabel("Auto-Insert:"))
+        self.hotkey_auto_label = QLabel("None")
+        self.hotkey_auto_label.setStyleSheet("font-weight: bold; font-size: 14px;")
+        secondary_ly.addWidget(self.hotkey_auto_label)
+        self.hotkey_auto_btn = QPushButton("Set")
+        self.hotkey_auto_btn.clicked.connect(self._start_capture_secondary)
+        secondary_ly.addWidget(self.hotkey_auto_btn)
+        hotkey_layout.addLayout(secondary_ly)
+
         settings_layout.addWidget(hotkey_group)
 
         settings_layout.addStretch()
@@ -362,7 +382,7 @@ class MainWindow(QMainWindow):
         self._restore_settings()
 
         # Start the global listener with the (possibly restored) hotkey
-        self._hotkey_listener.set_hotkey(self._current_combo)
+        self._hotkey_listener.set_hotkeys(self._current_combo, self._auto_insert_combo)
         self._hotkey_listener.start()
 
         # ── Auto-save on change ────────────────────────────────────────
@@ -477,13 +497,24 @@ class MainWindow(QMainWindow):
     # Hotkey capture
     # ------------------------------------------------------------------
 
-    def _start_hotkey_capture(self):
+    def _start_capture_primary(self):
+        self._start_hotkey_capture(False)
+
+    def _start_capture_secondary(self):
+        self._start_hotkey_capture(True)
+
+    def _start_hotkey_capture(self, is_secondary: bool):
         """Enter hotkey capture mode."""
         self._capturing_hotkey = True
+        self._capturing_auto_insert = is_secondary
         self._capture_modifiers = set()
-        self.hotkey_btn.setText("Press keys…")
-        self.hotkey_btn.setEnabled(False)
-        self.hotkey_label.setText("Listening…")
+        
+        btn = self.hotkey_auto_btn if is_secondary else self.hotkey_btn
+        lbl = self.hotkey_auto_label if is_secondary else self.hotkey_label
+        
+        btn.setText("Press keys…")
+        btn.setEnabled(False)
+        lbl.setText("Listening…")
         self._hotkey_listener.set_capture_mode(True)
 
     @pyqtSlot(object, bool)
@@ -508,24 +539,33 @@ class MainWindow(QMainWindow):
         """Finish capturing and apply the new hotkey."""
         self._capturing_hotkey = False
         self._hotkey_listener.set_capture_mode(False)
-        self._current_combo = combo
-        self._hotkey_listener.set_hotkey(combo)
-        self.hotkey_label.setText(str(combo))
-        self.hotkey_btn.setText("Set Hotkey")
-        self.hotkey_btn.setEnabled(True)
+
+        is_secondary = self._capturing_auto_insert
+        btn = self.hotkey_auto_btn if is_secondary else self.hotkey_btn
+        lbl = self.hotkey_auto_label if is_secondary else self.hotkey_label
+
+        if is_secondary:
+            self._auto_insert_combo = combo
+        else:
+            self._current_combo = combo
+
+        self._hotkey_listener.set_hotkeys(self._current_combo, self._auto_insert_combo)
+        lbl.setText(str(combo) if combo.is_valid() else "None")
+        btn.setText("Set")
+        btn.setEnabled(True)
         self._save_settings()
 
     # ------------------------------------------------------------------
     # Hotkey press / release (forwarded as signals to the controller)
     # ------------------------------------------------------------------
 
-    @pyqtSlot()
-    def _on_hotkey_pressed(self):
-        self.recording_requested.emit()
+    @pyqtSlot(bool)
+    def _on_hotkey_pressed(self, is_secondary: bool):
+        self.recording_requested.emit(is_secondary)
 
-    @pyqtSlot()
-    def _on_hotkey_released(self):
-        self.recording_stopped.emit()
+    @pyqtSlot(bool)
+    def _on_hotkey_released(self, is_secondary: bool):
+        self.recording_stopped.emit(is_secondary)
 
     @pyqtSlot()
     def _on_cancel_requested(self):
@@ -643,7 +683,17 @@ class MainWindow(QMainWindow):
         else:
             combo = DEFAULT_HOTKEY
         self._current_combo = combo
-        self.hotkey_label.setText(str(combo))
+        self.hotkey_label.setText(str(combo) if combo.is_valid() else "None")
+
+        saved_auto_modifiers = self._settings.value("hotkey_auto/modifiers", None)
+        saved_auto_main_key = self._settings.value("hotkey_auto/main_key", None)
+        if saved_auto_main_key is not None:
+            mods = set(saved_auto_modifiers) if saved_auto_modifiers else set()
+            auto_combo = HotkeyCombo(modifiers=mods, main_key=saved_auto_main_key)
+        else:
+            auto_combo = DEFAULT_AUTO_INSERT_HOTKEY
+        self._auto_insert_combo = auto_combo
+        self.hotkey_auto_label.setText(str(auto_combo) if auto_combo.is_valid() else "None")
 
         try:
             pairs = json.loads(self._settings.value("replacements", "[]") or "[]")
@@ -668,6 +718,10 @@ class MainWindow(QMainWindow):
         if self._current_combo is not None:
             self._settings.setValue("hotkey/modifiers", list(self._current_combo.modifiers))
             self._settings.setValue("hotkey/main_key", self._current_combo.main_key)
+        
+        if self._auto_insert_combo is not None:
+            self._settings.setValue("hotkey_auto/modifiers", list(self._auto_insert_combo.modifiers))
+            self._settings.setValue("hotkey_auto/main_key", self._auto_insert_combo.main_key)
 
     # ------------------------------------------------------------------
     # Cleanup

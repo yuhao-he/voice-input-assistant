@@ -69,8 +69,8 @@ class HotkeyCombo:
 
 class HotkeySignals(QObject):
     """Qt signals emitted by the hotkey listener."""
-    hotkey_pressed = pyqtSignal()
-    hotkey_released = pyqtSignal()
+    hotkey_pressed = pyqtSignal(bool)  # is_secondary
+    hotkey_released = pyqtSignal(bool) # is_secondary
     toggle_settings_requested = pyqtSignal()
     cancel_requested = pyqtSignal()  # Escape pressed: cancel all in-flight work
     key_event = pyqtSignal(object, bool)  # (key, is_press) — used for hotkey capture mode
@@ -85,9 +85,10 @@ class HotkeyListener:
 
     def __init__(self):
         self.signals = HotkeySignals()
-        self._combo: Optional[HotkeyCombo] = None
+        self._primary_combo: Optional[HotkeyCombo] = None
+        self._secondary_combo: Optional[HotkeyCombo] = None
         self._active_modifiers: Set[str] = set()
-        self._main_key_down: bool = False
+        self._main_key_down: Optional[str] = None  # None, 'primary', or 'secondary'
         self._listener: Optional[keyboard.Listener] = None
         self._capture_mode: bool = False  # When True, next key press sets the hotkey
         self._tap_run_loop = None
@@ -97,10 +98,11 @@ class HotkeyListener:
     # Public API
     # ------------------------------------------------------------------
 
-    def set_hotkey(self, combo: HotkeyCombo):
-        """Set the hotkey combo to listen for."""
-        self._combo = combo
-        self._main_key_down = False
+    def set_hotkeys(self, primary: HotkeyCombo, secondary: HotkeyCombo | None):
+        """Set the hotkey combos."""
+        self._primary_combo = primary
+        self._secondary_combo = secondary
+        self._main_key_down = None
 
     def start(self):
         """Start listening for global key events."""
@@ -151,18 +153,24 @@ class HotkeyListener:
                         self.signals.key_event.emit(KeyCode(vk=63), is_down)
                         return None
 
-                    if self._combo is not None and self._combo.is_valid():
-                        if self._combo.main_key in ("fn", "<63>"):
-                            if is_down:
-                                if self._active_modifiers == self._combo.modifiers and not self._main_key_down:
-                                    self._main_key_down = True
-                                    self.signals.hotkey_pressed.emit()
-                                    return None
-                            else:
-                                if self._main_key_down:
-                                    self._main_key_down = False
-                                    self.signals.hotkey_released.emit()
-                                    return None
+                    is_primary = self._primary_combo is not None and self._primary_combo.is_valid() and self._primary_combo.main_key in ("fn", "<63>")
+                    is_secondary = self._secondary_combo is not None and self._secondary_combo.is_valid() and self._secondary_combo.main_key in ("fn", "<63>")
+                    
+                    if is_primary or is_secondary:
+                        target_combo = self._secondary_combo if is_secondary else self._primary_combo
+                        is_target_secondary = is_secondary
+                        
+                        if is_down:
+                            if self._active_modifiers == target_combo.modifiers and self._main_key_down is None:
+                                self._main_key_down = 'secondary' if is_target_secondary else 'primary'
+                                self.signals.hotkey_pressed.emit(is_target_secondary)
+                                return None
+                        else:
+                            if self._main_key_down is not None:
+                                is_sec = self._main_key_down == 'secondary'
+                                self._main_key_down = None
+                                self.signals.hotkey_released.emit(is_sec)
+                                return None
             return event
 
         tap = Quartz.CGEventTapCreate(
@@ -211,16 +219,25 @@ class HotkeyListener:
             self.signals.toggle_settings_requested.emit()
             return
 
-        if self._combo is None or not self._combo.is_valid():
-            return
+        is_primary = (
+            self._primary_combo is not None 
+            and self._primary_combo.is_valid() 
+            and key_str == self._primary_combo.main_key
+            and self._active_modifiers == self._primary_combo.modifiers
+        )
+        is_secondary = (
+            self._secondary_combo is not None 
+            and self._secondary_combo.is_valid() 
+            and key_str == self._secondary_combo.main_key
+            and self._active_modifiers == self._secondary_combo.modifiers
+        )
 
-        if (
-            key_str == self._combo.main_key
-            and self._active_modifiers == self._combo.modifiers
-            and not self._main_key_down
-        ):
-            self._main_key_down = True
-            self.signals.hotkey_pressed.emit()
+        if is_secondary and self._main_key_down is None:
+            self._main_key_down = 'secondary'
+            self.signals.hotkey_pressed.emit(True)
+        elif is_primary and self._main_key_down is None:
+            self._main_key_down = 'primary'
+            self.signals.hotkey_pressed.emit(False)
 
     def _on_release(self, key):
         if self._capture_mode:
@@ -232,10 +249,21 @@ class HotkeyListener:
             self._active_modifiers.discard(mod_name)
             return
 
-        if self._combo is None or not self._combo.is_valid():
-            return
-
         key_str = key_to_str(key)
-        if key_str == self._combo.main_key and self._main_key_down:
-            self._main_key_down = False
-            self.signals.hotkey_released.emit()
+        is_primary = (
+            self._primary_combo is not None 
+            and self._primary_combo.is_valid() 
+            and key_str == self._primary_combo.main_key
+        )
+        is_secondary = (
+            self._secondary_combo is not None 
+            and self._secondary_combo.is_valid() 
+            and key_str == self._secondary_combo.main_key
+        )
+
+        if is_secondary and self._main_key_down == 'secondary':
+            self._main_key_down = None
+            self.signals.hotkey_released.emit(True)
+        elif is_primary and self._main_key_down == 'primary':
+            self._main_key_down = None
+            self.signals.hotkey_released.emit(False)

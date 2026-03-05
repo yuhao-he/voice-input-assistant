@@ -88,6 +88,8 @@ class AppController(QObject):
         # Generation counter — bumped on Escape to cancel all pending work
         self._generation = 0
         self._generation_lock = threading.Lock()
+        
+        self._pending_menu_insert = False
 
         self._pending_timers: list[QTimer] = []
         self._last_external_app = None
@@ -184,30 +186,38 @@ class AppController(QObject):
     # Recording start / stop
     # ------------------------------------------------------------------
 
-    @pyqtSlot()
-    def on_start_recording(self):
+    @pyqtSlot(bool)
+    def on_start_recording(self, is_auto_insert: bool = False):
+        if self._chat_overlay.isVisible() and self._chat_overlay._items and self._chat_overlay._items[-1]._state == "done":
+            self._pending_menu_insert = True
+            return
+
         if self._is_recording:
             # Second press while recording
             elapsed = time.monotonic() - self._press_time
             if elapsed < _DOUBLE_TAP_THRESHOLD:
-                # Double-tap detected: cancel recording and open history
-                self._bump_generation()
-                self._is_recording = False
-                self.recorder.stop()
-                
-                self._transcript_overlay.lock()
-                locked_rect = self._transcript_overlay.get_locked_rect()
-                self._transcript_overlay.dismiss()
-                
-                self._cancel_pending_timers()
-                self.window.set_status_idle()
-                
-                # Show the history menu instead at the typing cursor position
-                self._chat_overlay.show_history_menu(locked_rect)
-                return
+                if is_auto_insert:
+                    self._do_stop_recording(force_auto_insert=True)
+                    return
+                else:
+                    # Double-tap detected: cancel recording and open history
+                    self._bump_generation()
+                    self._is_recording = False
+                    self.recorder.stop()
+                    
+                    self._transcript_overlay.lock()
+                    locked_rect = self._transcript_overlay.get_locked_rect()
+                    self._transcript_overlay.dismiss()
+                    
+                    self._cancel_pending_timers()
+                    self.window.set_status_idle()
+                    
+                    # Show the history menu instead at the typing cursor position
+                    self._chat_overlay.show_history_menu(locked_rect)
+                    return
 
             # Normal tap mode stop
-            self._do_stop_recording()
+            self._do_stop_recording(force_auto_insert=is_auto_insert)
             return
 
         api_key = self.window.get_api_key()
@@ -252,18 +262,26 @@ class AppController(QObject):
         self._active_job = {"thread": thread, "result_box": result_box}
         thread.start()
 
-    @pyqtSlot()
-    def on_stop_recording(self):
+    @pyqtSlot(bool)
+    def on_stop_recording(self, is_auto_insert: bool = False):
         """Called on hotkey release — auto-detects push-to-talk vs tap mode."""
+        if self._pending_menu_insert:
+            self._pending_menu_insert = False
+            if self._chat_overlay.isVisible() and self._chat_overlay._items and self._chat_overlay._items[-1]._state == "done":
+                text = self._chat_overlay._items[-1].text()
+                self._chat_overlay.hide_keep_state()
+                self._do_insert(text)
+            return
+
         if not self._is_recording:
             return
         elapsed = time.monotonic() - self._press_time
         if elapsed < _TAP_THRESHOLD:
             self._is_tap_mode = True
             return
-        self._do_stop_recording()
+        self._do_stop_recording(force_auto_insert=is_auto_insert)
 
-    def _do_stop_recording(self):
+    def _do_stop_recording(self, force_auto_insert: bool = False):
         if not self._is_recording:
             return
         self._is_recording = False
@@ -273,7 +291,7 @@ class AppController(QObject):
 
         play_stop()
 
-        is_tap = self._is_tap_mode
+        is_tap = self._is_tap_mode and not force_auto_insert
         if is_tap:
             # Lock the overlay and capture its geometry + text
             self._transcript_overlay.lock()
@@ -312,6 +330,7 @@ class AppController(QObject):
         self._bump_generation()
         self._is_recording = False
         self._active_job = None
+        self._pending_menu_insert = False
 
         self.recorder.stop()
         self._transcript_overlay.dismiss()
