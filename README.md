@@ -40,7 +40,27 @@ Supports macOS, Windows, and Linux (X11 only; Wayland is not supported).
 
 ## Installation
 
-Installing on Mac and Linux:
+Installing on Linux:
+```bash
+# Clone the repository
+git clone https://github.com/yuhao-he/voice-input-assistant.git
+cd voice-input-assistant
+
+# Create a virtual environment
+python3 -m venv venv
+source venv/bin/activate
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+Installing on Mac:
+
+Before running the application on macOS, you must grant appropriate permissions:
+1. Go to **System Settings -> Privacy & Security -> Privacy** (or **System Preferences -> Security & Privacy -> Privacy**).
+2. Go to **Accessibility** and enable it for your "host" application (e.g., Terminal, iTerm2, or VS Code).
+3. Do the same under **Input Monitoring** to allow the application to listen for global hotkeys.
+
 ```bash
 # Clone the repository
 git clone https://github.com/yuhao-he/voice-input-assistant.git
