@@ -126,7 +126,7 @@ class TrayManager:
     on_toggle : callable
         Called when the user clicks "Show / Hide Settings".
     on_quit : callable
-        Called when the user clicks "Quit Voice Input".
+        Called when the user clicks "Quit VIA".
     """
 
     def __init__(
@@ -160,13 +160,13 @@ class TrayManager:
             print("[Tray] System tray not available on this desktop environment.")
 
         tray = QSystemTrayIcon(_make_mic_icon(), parent=self._parent)
-        tray.setToolTip("Voice Input — GCP Speech-to-Text")
+        tray.setToolTip("VIA — GCP Speech-to-Text")
 
         menu = QMenu()
         show_action = menu.addAction("Show / Hide Settings")
         show_action.triggered.connect(self._on_toggle)
         menu.addSeparator()
-        quit_action = menu.addAction("Quit Voice Input")
+        quit_action = menu.addAction("Quit VIA")
         quit_action.triggered.connect(self._on_quit)
 
         tray.setContextMenu(menu)
@@ -185,7 +185,7 @@ class TrayManager:
         status_item = status_bar.statusItemWithLength_(_NSVariableStatusItemLength)
 
         status_item.button().setTitle_("🎙")
-        status_item.button().setToolTip_("Voice Input — GCP Speech-to-Text")
+        status_item.button().setToolTip_("VIA — GCP Speech-to-Text")
 
         menu = _NSMenu.new()
 
@@ -203,7 +203,7 @@ class TrayManager:
         menu.addItem_(_NSMenuItem.separatorItem())
 
         quit_item = _NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            "Quit Voice Input", "quitApp:", ""
+            "Quit VIA", "quitApp:", ""
         )
         quit_item.setTarget_(delegate)
         menu.addItem_(quit_item)
@@ -238,7 +238,7 @@ class TrayManager:
             and self._tray_icon.supportsMessages()
         ):
             self._tray_icon.showMessage(
-                "Voice Input",
+                "VIA",
                 "Still running in the background — click the tray icon to reopen settings.",
                 QSystemTrayIcon.MessageIcon.Information,
                 3000,

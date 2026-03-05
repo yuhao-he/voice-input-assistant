@@ -11,6 +11,7 @@ Vertex AI, so no GCP project ID or gcloud credentials are required.
 from __future__ import annotations
 
 import httpx
+import time
 from typing import Optional
 
 from google import genai
@@ -60,7 +61,6 @@ def _get_client() -> genai.Client:
         )
     return _client
 
-
 def postprocess(transcript: str, prompt: str) -> str:
     """
     Send *transcript* + *prompt* to Gemini and return the model's response.
@@ -88,13 +88,18 @@ def postprocess(transcript: str, prompt: str) -> str:
     )
 
     try:
-        print(f"[Postprocess] Full prompt to Gemini:\n{full_prompt}")
         client = _get_client()
+        
         response = client.models.generate_content(
             model=_MODEL,
             contents=full_prompt,
+            config={
+                'temperature': 0.0,
+                'thinking_config': {'thinking_budget': 0}
+            }
         )
         result = response.text.strip()
+            
         return result if result else transcript
     except Exception as exc:
         print(f"[Postprocess] Gemini call failed: {exc}")

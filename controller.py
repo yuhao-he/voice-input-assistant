@@ -48,7 +48,7 @@ from ui.chat_overlay import ChatHistoryOverlay
 from ui.window import MainWindow
 from os_integration import get_os_integration
 
-_TAP_THRESHOLD = 0.4  # seconds — hold shorter = tap mode
+_TAP_THRESHOLD = 0.25  # seconds — hold shorter = tap mode
 _DOUBLE_TAP_THRESHOLD = 0.5  # seconds — two presses within this = history menu
 
 

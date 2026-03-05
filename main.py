@@ -1,5 +1,5 @@
 """
-Voice Input — entry point.
+VIA — entry point.
 
 Initialises the Qt application, creates the main window and controller,
 then starts the event loop.
@@ -19,7 +19,7 @@ _IS_MACOS = platform.system() == "Darwin"
 
 _SETUP_BANNER = """\
 ╔══════════════════════════════════════════════════════════════════╗
-║  Speedh Input                                                    ║
+║  VIA                                                             ║
 ║                                                                  ║
 ║  First-time setup (one-time, no gcloud CLI required):            ║
 ║                                                                  ║
@@ -40,8 +40,8 @@ def main():
     print(_SETUP_BANNER)
 
     app = QApplication(sys.argv)
-    app.setOrganizationName("SpeechIput")
-    app.setApplicationName("Speech Input")
+    app.setOrganizationName("VIA")
+    app.setApplicationName("VIA")
     # Keep the app alive when the main window is hidden (tray-only mode).
     app.setQuitOnLastWindowClosed(False)
 
