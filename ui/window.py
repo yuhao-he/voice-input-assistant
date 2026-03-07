@@ -245,7 +245,11 @@ class MainWindow(QMainWindow):
         hotkey_layout = QVBoxLayout(hotkey_group)
 
         # Primary
+        primary_vbox = QVBoxLayout()
+        primary_vbox.setSpacing(0)
+
         primary_ly = QHBoxLayout()
+        primary_ly.setContentsMargins(0, 0, 0, 0)
         primary_ly.addWidget(QLabel("Menu (Push-to-Talk):"))
         self.hotkey_label = QLabel(str(DEFAULT_HOTKEY))
         self.hotkey_label.setStyleSheet("font-weight: bold; font-size: 14px;")
@@ -253,10 +257,26 @@ class MainWindow(QMainWindow):
         self.hotkey_btn = QPushButton("Set")
         self.hotkey_btn.clicked.connect(self._start_capture_primary)
         primary_ly.addWidget(self.hotkey_btn)
-        hotkey_layout.addLayout(primary_ly)
+        primary_vbox.addLayout(primary_ly)
+        
+        primary_desc = QLabel(
+            "• Hold: Record & directly paste on release\n"
+            "• Tap & Tap: Record & open history menu; tap again to insert\n"
+            "• Double Tap: Cancel and open history menu\n"
+            "• Hold in history menu: Voice-edit the latest message"
+        )
+        primary_desc.setStyleSheet("color: #888; font-size: 12px;")
+        primary_vbox.addWidget(primary_desc)
+        hotkey_layout.addLayout(primary_vbox)
+
+        hotkey_layout.addSpacing(6)
 
         # Secondary
+        secondary_vbox = QVBoxLayout()
+        secondary_vbox.setSpacing(0)
+
         secondary_ly = QHBoxLayout()
+        secondary_ly.setContentsMargins(0, 0, 0, 0)
         secondary_ly.addWidget(QLabel("Auto-Insert:"))
         self.hotkey_auto_label = QLabel("None")
         self.hotkey_auto_label.setStyleSheet("font-weight: bold; font-size: 14px;")
@@ -264,7 +284,14 @@ class MainWindow(QMainWindow):
         self.hotkey_auto_btn = QPushButton("Set")
         self.hotkey_auto_btn.clicked.connect(self._start_capture_secondary)
         secondary_ly.addWidget(self.hotkey_auto_btn)
-        hotkey_layout.addLayout(secondary_ly)
+        secondary_vbox.addLayout(secondary_ly)
+        
+        secondary_desc = QLabel(
+            "Immediately types out the transcript but keeps the history menu open."
+        )
+        secondary_desc.setStyleSheet("color: #888; font-size: 12px;")
+        secondary_vbox.addWidget(secondary_desc)
+        hotkey_layout.addLayout(secondary_vbox)
 
         settings_layout.addWidget(hotkey_group)
 

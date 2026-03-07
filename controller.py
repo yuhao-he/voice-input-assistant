@@ -433,6 +433,10 @@ class AppController(QObject):
                 flags=re.IGNORECASE,
             )
 
+        # Add a space at the end of each transcript as requested
+        if not text.endswith(" "):
+            text += " "
+
         self.transcription_done.emit(text, msg_id, generation, is_tap_mode)
 
     # ------------------------------------------------------------------
@@ -607,6 +611,10 @@ class AppController(QObject):
                 final_text,
                 flags=re.IGNORECASE,
             )
+
+        # Add a space at the end of each transcript as requested
+        if not final_text.endswith(" "):
+            final_text += " "
 
         self.edit_transcription_done.emit(final_text, msg_id, generation)
 
