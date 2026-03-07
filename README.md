@@ -40,7 +40,7 @@ Supports macOS, Windows, and Linux (X11 only; Wayland is not supported).
 
 ## Installation
 
-Installing on Linux:
+### Linux
 ```bash
 # Clone the repository
 git clone https://github.com/yuhao-he/voice-input-assistant.git
@@ -54,7 +54,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Installing on Mac:
+### macOS
 
 Before running the application on macOS, you must grant appropriate permissions:
 1. Go to **System Settings -> Privacy & Security -> Privacy** (or **System Preferences -> Security & Privacy -> Privacy**).
@@ -76,7 +76,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Installing on Windows:
+### Windows
 ```bash
 # Clone the repo
 git clone https://github.com/yuhao-he/voice-input-assistant.git
