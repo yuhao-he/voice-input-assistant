@@ -257,9 +257,10 @@ class MessageItem(QWidget):
         self._opacity   = 1.0
         self._is_latest = is_latest
         self._editing   = False
-        self._state     = state   # "processing" or "done"
+        self._state     = state   # "processing", "done", "edit_recording", or "edit_processing"
         self._msg_id    = -1      # set by ChatHistoryOverlay
         self._spin_frame = 0
+        self._edit_instructions = ""
         self._focus_enforcer = QTimer(self)
         self._focus_enforcer.setInterval(10)
         self._focus_enforcer.timeout.connect(self._do_focus)
@@ -345,6 +346,26 @@ class MessageItem(QWidget):
             display = self._raw_text if self._raw_text else "…"
             self._text_edit.setPlainText(f"{display} {spinner}")
             color = "rgba(255,255,255,130)"
+        elif self._state in ("edit_recording", "edit_processing"):
+            gray_color = "rgba(200,200,200,160)"
+            white_color = "rgba(255,255,255,240)"
+            
+            orig_html = self._raw_text.replace("\n", "<br>")
+            instr_text = self._edit_instructions if self._edit_instructions else "…"
+            
+            if self._state == "edit_processing":
+                spinner = _SPIN_CHARS[self._spin_frame]
+                instr_text += f" {spinner}"
+                
+            instr_html = instr_text.replace("\n", "<br>")
+            
+            html = (
+                f"<div style='color: {gray_color};'>{orig_html}</div>"
+                f"<div style='color: {gray_color};'>──────────</div>"
+                f"<div style='color: {white_color};'>{instr_html}</div>"
+            )
+            self._text_edit.setHtml(html)
+            color = "rgba(255,255,255,240)"
         else:
             self._text_edit.setPlainText(self._raw_text)
             color = self._resolve_color()
@@ -360,6 +381,8 @@ class MessageItem(QWidget):
     def _apply_text_color(self):
         if self._state == "processing":
             color = "rgba(255,255,255,130)"
+        elif self._state in ("edit_recording", "edit_processing"):
+            color = "rgba(255,255,255,240)"
         else:
             color = self._resolve_color()
         self._text_edit.setStyleSheet(
@@ -504,13 +527,11 @@ class MessageItem(QWidget):
 
     def tick_spinner(self, frame: int):
         """Advance the spinner to *frame* (called by parent timer)."""
-        if self._state != "processing":
+        if self._state not in ("processing", "edit_processing"):
             return
         self._spin_frame = frame
-        spinner = _SPIN_CHARS[frame]
-        display = self._raw_text if self._raw_text else "…"
         self._text_edit.blockSignals(True)
-        self._text_edit.setPlainText(f"{display} {spinner}")
+        self._apply_display()
         self._text_edit.blockSignals(False)
         self.update()
 
@@ -519,10 +540,33 @@ class MessageItem(QWidget):
         self._state = "done"
         self._raw_text = final_text
         self._text_edit.blockSignals(True)
-        self._text_edit.setPlainText(final_text)
+        self._apply_display()
         self._text_edit.blockSignals(False)
         self._apply_text_color()
         self._place_children()
+        self._update_height()
+
+    def start_edit_recording(self):
+        self._state = "edit_recording"
+        self._edit_instructions = ""
+        self._text_edit.blockSignals(True)
+        self._apply_display()
+        self._text_edit.blockSignals(False)
+        self._action_bar.hide()
+        self._update_height()
+        
+    def update_edit_instructions(self, text: str):
+        self._edit_instructions = text
+        self._text_edit.blockSignals(True)
+        self._apply_display()
+        self._text_edit.blockSignals(False)
+        self._update_height()
+
+    def start_edit_processing(self):
+        self._state = "edit_processing"
+        self._text_edit.blockSignals(True)
+        self._apply_display()
+        self._text_edit.blockSignals(False)
         self._update_height()
 
     # ── painting ─────────────────────────────────────────────────────────────
@@ -637,7 +681,7 @@ class ChatHistoryOverlay(QWidget):
             item.set_hover_state(is_hovered)
 
     def _ensure_spinner(self):
-        has_processing = any(it._state == "processing" for it in self._items)
+        has_processing = any(it._state in ("processing", "edit_processing") for it in self._items)
         if has_processing and not self._spin_timer.isActive():
             self._spin_timer.start()
         elif not has_processing and self._spin_timer.isActive():
@@ -942,6 +986,54 @@ class ChatHistoryOverlay(QWidget):
         self._items.clear()
         self.hide()
 
+    def start_edit_mode(self) -> int | None:
+        """
+        Transitions the latest message to edit mode if it exists and is done.
+        Returns the msg_id if successful, else None.
+        """
+        if not self._items:
+            return None
+        latest = self._items[-1]
+        if latest._state != "done":
+            return None
+            
+        # Hide all previous messages during edit mode (for cleaner UI)
+        for existing in self._items[:-1]:
+            existing.setVisible(False)
+            
+        latest.start_edit_recording()
+        self._ensure_spinner()
+        self._reposition(history_visible=False)
+        return latest._msg_id
+
+    def update_edit_interim(self, msg_id: int, text: str):
+        target = next((item for item in self._items if item._msg_id == msg_id), None)
+        if target:
+            target.update_edit_instructions(text)
+            self._reposition(history_visible=True)
+
+    def finish_edit_recording(self, msg_id: int):
+        target = next((item for item in self._items if item._msg_id == msg_id), None)
+        if target:
+            target.start_edit_processing()
+            self._ensure_spinner()
+
+    def complete_edit_processing(self, msg_id: int, final_text: str):
+        target = next((item for item in self._items if item._msg_id == msg_id), None)
+        if target:
+            target.complete(final_text)
+            self._ensure_spinner()
+            
+            # Fade previous items back in
+            is_latest = (self._items and self._items[-1] is target)
+            if is_latest:
+                for existing in self._items[:-1]:
+                    if existing._state == "done":
+                        existing.setVisible(True)
+                        self._fade_in_item(existing)
+
+            self._reposition(history_visible=is_latest)
+
     # ── insert handler ───────────────────────────────────────────────────────
 
     def _handle_insert(self, text: str):
@@ -956,7 +1048,7 @@ class ChatHistoryOverlay(QWidget):
         p.fillRect(self.rect(), Qt.GlobalColor.transparent)
         p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        has_processing = any(it._state == "processing" for it in self._items)
+        has_processing = any(it._state in ("processing", "edit_processing", "edit_recording") for it in self._items)
         if not has_processing and self._items:
             inner_rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
             path = QPainterPath()

@@ -146,6 +146,7 @@ class HotkeyListener:
                 is_down = bool(flags & Quartz.kCGEventFlagMaskSecondaryFn)
 
                 if is_down != self._fn_state:
+                    print(f"[HOTKEY LOG] Fn state transitioned: {self._fn_state} -> {is_down}")
                     self._fn_state = is_down
 
                     if self._capture_mode:
@@ -162,11 +163,13 @@ class HotkeyListener:
                         
                         if is_down:
                             if self._active_modifiers == target_combo.modifiers and self._main_key_down is None:
+                                print(f"[HOTKEY LOG] Emitting hotkey_pressed. Main key down was: {self._main_key_down}")
                                 self._main_key_down = 'secondary' if is_target_secondary else 'primary'
                                 self.signals.hotkey_pressed.emit(is_target_secondary)
                                 return None
                         else:
                             if self._main_key_down is not None:
+                                print(f"[HOTKEY LOG] Emitting hotkey_released. Main key down was: {self._main_key_down}")
                                 is_sec = self._main_key_down == 'secondary'
                                 self._main_key_down = None
                                 self.signals.hotkey_released.emit(is_sec)
@@ -208,6 +211,10 @@ class HotkeyListener:
             return
 
         key_str = key_to_str(key)
+        
+        # If on macOS, the Fn key (keycode 63) is fully handled by the Quartz event tap.
+        if _IS_MACOS and key_str in ("fn", "<63>"):
+            return
 
         is_settings_combo = (
             self._active_modifiers == {"ctrl", "shift", "alt"}
@@ -250,6 +257,12 @@ class HotkeyListener:
             return
 
         key_str = key_to_str(key)
+
+        # If on macOS, the Fn key (keycode 63) is fully handled by the Quartz event tap.
+        # Allowing pynput to process it here leads to false, premature release events.
+        if _IS_MACOS and key_str in ("fn", "<63>"):
+            return
+
         is_primary = (
             self._primary_combo is not None 
             and self._primary_combo.is_valid() 
@@ -262,8 +275,10 @@ class HotkeyListener:
         )
 
         if is_secondary and self._main_key_down == 'secondary':
+            print(f"[PYNPUT LOG] Emitting hotkey_released for secondary. key_str: {key_str}")
             self._main_key_down = None
             self.signals.hotkey_released.emit(True)
         elif is_primary and self._main_key_down == 'primary':
+            print(f"[PYNPUT LOG] Emitting hotkey_released for primary. key_str: {key_str}")
             self._main_key_down = None
             self.signals.hotkey_released.emit(False)

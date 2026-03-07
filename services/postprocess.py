@@ -104,3 +104,54 @@ def postprocess(transcript: str, prompt: str) -> str:
     except Exception as exc:
         print(f"[Postprocess] Gemini call failed: {exc}")
         return transcript
+
+def postprocess_edit(original_text: str, instructions: str, custom_prompt: str = "") -> str:
+    """
+    Send *original_text* + *instructions* to Gemini and return the modified response.
+
+    Parameters
+    ----------
+    original_text : str
+        The existing text to be modified.
+    instructions : str
+        The user's voice instructions on how to change the text.
+    custom_prompt : str
+        Optional base custom prompt to include.
+
+    Returns
+    -------
+    str
+        The modified text, or the original text on failure.
+    """
+    instructions = instructions.strip() if instructions else ""
+    if not instructions or not original_text:
+        return original_text
+
+    base_prompt = custom_prompt.strip() + "\n\n" if custom_prompt.strip() else ""
+    full_prompt = (
+        f"{base_prompt}"
+        f"You are a helpful voice assistant editor.\n"
+        f"The user has dictated an existing text, and now they have provided some spoken instructions to modify it.\n"
+        f"Apply the user's instructions to the original text.\n\n"
+        f"Original text:\n{original_text}\n\n"
+        f"Instructions:\n{instructions}\n\n"
+        f"Respond ONLY with the final modified text, nothing else. Do not include markdown formatting or explanations."
+    )
+
+    try:
+        client = _get_client()
+        
+        response = client.models.generate_content(
+            model=_MODEL,
+            contents=full_prompt,
+            config={
+                'temperature': 0.0,
+                'thinking_config': {'thinking_budget': 0}
+            }
+        )
+        result = response.text.strip()
+            
+        return result if result else original_text
+    except Exception as exc:
+        print(f"[Postprocess] Edit Gemini call failed: {exc}")
+        return original_text

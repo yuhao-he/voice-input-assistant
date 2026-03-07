@@ -42,7 +42,7 @@ from audio.sounds import play_start, play_stop
 import services.transcriber as _transcriber
 import services.postprocess as _postprocess
 from services.transcriber import transcribe_streaming
-from services.postprocess import postprocess
+from services.postprocess import postprocess, postprocess_edit
 from ui.overlay import TranscriptOverlay
 from ui.chat_overlay import ChatHistoryOverlay
 from ui.window import MainWindow
@@ -62,6 +62,10 @@ class AppController(QObject):
     transcription_done = pyqtSignal(str, int, int, bool)   # (text, msg_id, generation, is_tap_mode)
     transcription_failed = pyqtSignal(str, int, int, bool) # (msg, msg_id, generation, is_tap_mode)
     interim_transcript = pyqtSignal(str)             # emitted with live transcript text
+
+    edit_interim_transcript = pyqtSignal(str)
+    edit_transcription_done = pyqtSignal(str, int, int) # (text, msg_id, generation)
+    edit_transcription_failed = pyqtSignal(str, int, int) # (msg, msg_id, generation)
 
     def __init__(self, window: MainWindow):
         super().__init__()
@@ -112,6 +116,16 @@ class AppController(QObject):
 
         # Live transcript updates → overlay
         self.interim_transcript.connect(self._transcript_overlay.set_text)
+        
+        # Edit callbacks
+        self._edit_mode_timer = QTimer(self)
+        self._edit_mode_timer.setSingleShot(True)
+        self._edit_mode_timer.timeout.connect(self._start_edit_recording)
+        self._edit_msg_id: int | None = None
+        
+        self.edit_interim_transcript.connect(self._on_edit_interim_ui)
+        self.edit_transcription_done.connect(self._on_edit_transcription_done)
+        self.edit_transcription_failed.connect(self._on_edit_transcription_failed)
 
         # Keep a best-effort pointer to the last non-self foreground app
         self._focus_probe_timer = QTimer(self)
@@ -127,6 +141,9 @@ class AppController(QObject):
 
     def _on_interim_callback(self, text: str):
         self.interim_transcript.emit(text)
+
+    def _on_edit_interim_callback(self, text: str):
+        self.edit_interim_transcript.emit(text)
 
     def _capture_frontmost_external_app(self):
         app = self._os_api.get_frontmost_app()
@@ -188,8 +205,17 @@ class AppController(QObject):
 
     @pyqtSlot(bool)
     def on_start_recording(self, is_auto_insert: bool = False):
+        print(f"[EDIT LOG] on_start_recording called. is_auto_insert: {is_auto_insert}")
+        chat_visible = self._chat_overlay.isVisible()
+        items_count = len(self._chat_overlay._items) if self._chat_overlay._items else 0
+        last_item_state = self._chat_overlay._items[-1]._state if items_count > 0 else "N/A"
+        print(f"[EDIT LOG] Chat overlay state - visible: {chat_visible}, items: {items_count}, last_item_state: {last_item_state}")
+        
         if self._chat_overlay.isVisible() and self._chat_overlay._items and self._chat_overlay._items[-1]._state == "done":
+            print("[EDIT LOG] Conditions met for edit mode or paste. Setting _pending_menu_insert to True.")
             self._pending_menu_insert = True
+            self._press_time = time.monotonic()
+            self._edit_mode_timer.start(int(_TAP_THRESHOLD * 1000))
             return
 
         if self._is_recording:
@@ -265,12 +291,23 @@ class AppController(QObject):
     @pyqtSlot(bool)
     def on_stop_recording(self, is_auto_insert: bool = False):
         """Called on hotkey release — auto-detects push-to-talk vs tap mode."""
+        print(f"[EDIT LOG] on_stop_recording called. is_auto_insert: {is_auto_insert}, _pending_menu_insert: {self._pending_menu_insert}")
         if self._pending_menu_insert:
             self._pending_menu_insert = False
-            if self._chat_overlay.isVisible() and self._chat_overlay._items and self._chat_overlay._items[-1]._state == "done":
-                text = self._chat_overlay._items[-1].text()
-                self._chat_overlay.hide_keep_state()
-                self._do_insert(text)
+            timer_active = self._edit_mode_timer.isActive()
+            print(f"[EDIT LOG] _pending_menu_insert was True. Timer active: {timer_active}")
+            if timer_active:
+                self._edit_mode_timer.stop()
+                if self._chat_overlay.isVisible() and self._chat_overlay._items and self._chat_overlay._items[-1]._state == "done":
+                    print("[EDIT LOG] Executing direct paste (_do_insert).")
+                    text = self._chat_overlay._items[-1].text()
+                    self._chat_overlay.hide_keep_state()
+                    self._do_insert(text)
+                else:
+                    print("[EDIT LOG] Timer was active but chat overlay state changed, no paste.")
+            elif self._edit_msg_id is not None:
+                print("[EDIT LOG] Stopping edit recording.")
+                self._do_stop_edit_recording()
             return
 
         if not self._is_recording:
@@ -327,8 +364,13 @@ class AppController(QObject):
 
     @pyqtSlot()
     def on_cancel_all(self):
+        print("[EDIT LOG] on_cancel_all called")
         self._bump_generation()
         self._is_recording = False
+        self._edit_mode_timer.stop()
+        if self._edit_msg_id is not None:
+            self._chat_overlay.remove_message(self._edit_msg_id)
+            self._edit_msg_id = None
         self._active_job = None
         self._pending_menu_insert = False
 
@@ -342,11 +384,12 @@ class AppController(QObject):
     # Background workers
     # ------------------------------------------------------------------
 
-    def _streaming_worker(self, audio_queue, language, boost_words, boost_value, result_box: list):
+    def _streaming_worker(self, audio_queue, language, boost_words, boost_value, result_box: list, is_edit: bool = False):
+        callback = self._on_edit_interim_callback if is_edit else self._on_interim_callback
         text = transcribe_streaming(
             audio_queue=audio_queue,
             language_code=language,
-            on_interim=self._on_interim_callback,
+            on_interim=callback,
             boost_words=boost_words if boost_words else None,
             boost_value=boost_value,
         )
@@ -466,4 +509,131 @@ class AppController(QObject):
             self._transcript_overlay.complete_segment(msg_id)
 
         if not self._is_recording:
+            self.window.set_status_idle()
+
+    # ------------------------------------------------------------------
+    # Edit Handlers
+    # ------------------------------------------------------------------
+
+    def _start_edit_recording(self):
+        print("[EDIT LOG] _start_edit_recording triggered by timer.")
+        msg_id = self._chat_overlay.start_edit_mode()
+        if msg_id is None:
+            print("[EDIT LOG] _start_edit_recording: start_edit_mode returned None, resetting _pending_menu_insert.")
+            self._pending_menu_insert = False
+            return
+            
+        self._edit_msg_id = msg_id
+        
+        play_start()
+        self.window.set_status_recording()
+        self.recorder.start()
+        
+        language = self.window.get_language_code()
+        boost_words = self.window.get_boost_words()
+        boost_value = self.window.get_boost_value()
+        result_box: list[str | None] = [None]
+        
+        thread = threading.Thread(
+            target=self._streaming_worker,
+            args=(self.recorder.audio_queue, language, boost_words, boost_value, result_box, True),
+            daemon=True,
+        )
+        self._active_job = {"thread": thread, "result_box": result_box}
+        thread.start()
+
+    def _do_stop_edit_recording(self):
+        msg_id = self._edit_msg_id
+        self._edit_msg_id = None
+        
+        captured_queue = self.recorder.audio_queue
+        QTimer.singleShot(200, lambda: self.recorder.finalize(captured_queue))
+        play_stop()
+        
+        self._chat_overlay.finish_edit_recording(msg_id)
+        
+        job = self._active_job
+        thread_ref = job["thread"] if job else None
+        result_box = job["result_box"] if job else [None]
+        self._active_job = None
+        
+        self.window.set_status_transcribing()
+        
+        original_text = next((item._raw_text for item in self._chat_overlay._items if item._msg_id == msg_id), "")
+        prompt = self.window.get_postproc_prompt()
+        replacements = self.window.get_replacements()
+        generation = self._current_generation()
+        
+        threading.Thread(
+            target=self._wait_for_edit_streaming,
+            args=(thread_ref, result_box, original_text, prompt, replacements, msg_id, generation),
+            daemon=True,
+        ).start()
+
+    def _wait_for_edit_streaming(
+        self,
+        thread: threading.Thread | None,
+        result_box: list,
+        original_text: str,
+        custom_prompt: str,
+        replacements: list[tuple[str, str]],
+        msg_id: int,
+        generation: int,
+    ):
+        if thread is not None:
+            thread.join()
+
+        if generation != self._current_generation():
+            return
+
+        instructions = result_box[0]
+
+        if not instructions:
+            self.edit_transcription_failed.emit("No transcription returned.", msg_id, generation)
+            return
+
+        print(f"[Postprocess] Sending edit to Gemini… (Instructions: {instructions})")
+        
+        final_text = postprocess_edit(original_text, instructions, custom_prompt)
+        print(f"[Postprocess] Edit Result: {final_text}")
+
+        if generation != self._current_generation():
+            return
+
+        for find, repl in replacements:
+            final_text = re.sub(
+                r'\b' + re.escape(find) + r'\b',
+                repl,
+                final_text,
+                flags=re.IGNORECASE,
+            )
+
+        self.edit_transcription_done.emit(final_text, msg_id, generation)
+
+    @pyqtSlot(str)
+    def _on_edit_interim_ui(self, text: str):
+        if self._edit_msg_id is not None:
+            self._chat_overlay.update_edit_interim(self._edit_msg_id, text)
+
+    @pyqtSlot(str, int, int)
+    def _on_edit_transcription_done(self, final_text: str, msg_id: int, generation: int):
+        if generation != self._current_generation():
+            return
+            
+        print(f"\n[Edit] >>> {final_text}\n")
+        self._chat_overlay.complete_edit_processing(msg_id, final_text)
+        
+        if not self._is_recording and self._edit_msg_id is None:
+            self.window.set_status_idle()
+
+    @pyqtSlot(str, int, int)
+    def _on_edit_transcription_failed(self, msg: str, msg_id: int, generation: int):
+        if generation != self._current_generation():
+            return
+            
+        print(f"[Edit Info] {msg}")
+        original_text = next((item._raw_text for item in self._chat_overlay._items if item._msg_id == msg_id), "")
+        self._chat_overlay.complete_edit_processing(msg_id, original_text)
+        
+        if not self._is_recording and self._edit_msg_id is None:
             self.window.set_status_idle()
